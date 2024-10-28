@@ -1,14 +1,14 @@
-# ESM2 Pretraining
+# ESM-2 Pretraining
 
 This tutorial serves as a demo for pretraining [ESM2](https://www.science.org/doi/abs/10.1126/science.ade2574) from scratch with [UniProt](https://www.uniprot.org/) sequences.
 
-The ESM2 model is a transformer-based protein language model that was pretrained on masked language model (MLM) task. The objective is to recover the original amino acid types of the perturbed locations from the rest of the protein sequences. Through pretraining, ESM2 learns the evolutionary information in protein sequences similar to conservation analysis and Pott's model, and predicts the optimal mutations on any given protein sequence.
+The ESM-2 model is a transformer-based protein language model that was pretrained on masked language model (MLM) task. The objective is to recover the original amino acid types of the perturbed locations from the rest of the protein sequences. Through pretraining, ESM-2 learns the evolutionary information in protein sequences similar to conservation analysis and Pott's model, and predicts the optimal mutations on any given protein sequence.
 
 # Setup and Assumptions
 
-In this tutorial, we will demonstrate how to create an ESM2 pretraining data module, and create and train a ESM2 model.
+In this tutorial, we will demonstrate how to create an ESM-2 pretraining data module, and create and train a ESM-2 model.
 
-All commands should be executed inside the BioNeMo docker container, which has all ESM2 dependencies pre-installed. This tutorial assumes that a copy of the BioNeMo framework repo exists on workstation or server and has been mounted inside the container at `/workspace/bionemo2`.  For more information on how to build or pull the BioNeMo2 container, refer to the [Initialization Guide](../../getting-started/initialization-guide.md).
+All commands should be executed inside the BioNeMo docker container, which has all ESM-2 dependencies pre-installed. This tutorial assumes that a copy of the BioNeMo framework repo exists on workstation or server and has been mounted inside the container at `/workspace/bionemo2`.  For more information on how to build or pull the BioNeMo2 container, refer to the [Initialization Guide](../../getting-started/initialization-guide.md).
 
 !!! note
 
@@ -19,7 +19,7 @@ Similar to PyTorch Lightning, we have to define some key classes:
 1. `MegatronStrategy` - To launch and setup parallelism for [NeMo](https://github.com/NVIDIA/NeMo/tree/main) and [Megatron-LM](https://github.com/NVIDIA/Megatron-LM).
 2. `Trainer` - To configure training configurations and logging.
 3. `ESMDataModule` - To load pretraining training and validation data with mapped UniRef90 sequences to UniRef50 clusters.
-4. `ESM2Config` - To configure the ESM2 model as `BionemoLightningModule`.
+4. `ESM2Config` - To configure the ESM-2 model as `BionemoLightningModule`.
 
 ## 1 - MegatronStrategy
 BioNeMo2 supports data parallel (DP), tensor parallel (TP) and pipeline parallel (PP) for training large models. Instead of `DDPStrategy` in PyTorch Lightning, we use `MegatronStrategy` to launch and setup parallelism for NeMo and Megatron-LM.
@@ -94,7 +94,7 @@ print(PrecisionTypes)  # show all possible precision types
 ```
 
 ## 3 - ESMDataModule
-Before instantiating with data module, we can first download the testing ESM2 pretraining data with `download_bionemo_data`. The command line will download the data if we haven't yet, and will return the path to the testing data, which is needed to instantiate `ESMDataModule`.
+Before instantiating with data module, we can first download the testing ESM-2 pretraining data with `download_bionemo_data`. The command line will download the data if we haven't yet, and will return the path to the testing data, which is needed to instantiate `ESMDataModule`.
 
 ```bash
 download_bionemo_data esm2/testdata_esm2_pretrain:2.0 --source ngc  # test data
@@ -137,7 +137,7 @@ data = ESMDataModule(
 
 !!! note "`RandomMaskStrategy`"
 
-    When trained on MLM objective, the loss function randomly includes 15% of the tokens, within which 80% are masked, 10% are replaced with a random token, and 10% are kept unchanged. Since the vocabulary includes amino acids as well as special tokens, part of the protein sequence may be replaced by a special token. This is the default in both BioNeMo2 and HuggingFace ESM2 implementation.
+    When trained on MLM objective, the loss function randomly includes 15% of the tokens, within which 80% are masked, 10% are replaced with a random token, and 10% are kept unchanged. Since the vocabulary includes amino acids as well as special tokens, part of the protein sequence may be replaced by a special token. This is the default in both BioNeMo2 and HuggingFace ESM-2 implementation.
 
     To enforce amino-acid-only replacement, users can pass `random_mask_strategy=RandomMaskStrategy.AMINO_ACID_ONLY` to `ESMDataModule`.
 
@@ -156,7 +156,7 @@ from bionemo.llm.lightning import BionemoLightningModule
 from bionemo.llm.model.biobert.lightning import biobert_lightning_module
 from bionemo.llm.model.biobert.model import BiobertSpecOption
 
-# ESM2 650M config
+# ESM-2 650M config
 num_layers = 33
 hidden_size = 1280
 num_attention_heads = 20
@@ -212,7 +212,7 @@ model: BionemoLightningModule = biobert_lightning_module(
 
 !!! note "`ModuleSpec`"
 
-    `ModelSpec` decides what torch modules are used in the transformer layers. By default, BioNeMo2 accelerates ESM2 architecture with TransformerEngine layers. Users can define their own `ModelSpec` for customized transformer layers. See [`get_biobert_spec`](https://github.com/NVIDIA/bionemo-framework/blob/main/sub-packages/bionemo-llm/src/bionemo/llm/model/biobert/transformer_specs.py#L61).
+    `ModelSpec` decides what torch modules are used in the transformer layers. By default, BioNeMo2 accelerates ESM-2 architecture with TransformerEngine layers. Users can define their own `ModelSpec` for customized transformer layers. See [`get_biobert_spec`](https://github.com/NVIDIA/bionemo-framework/blob/main/sub-packages/bionemo-llm/src/bionemo/llm/model/biobert/transformer_specs.py#L61).
 
 
 !!! note "`BionemoLightningModule`"
