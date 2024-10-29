@@ -202,3 +202,6 @@ COPY ./ci/scripts ./ci/scripts
 COPY ./docs ./docs
 
 RUN chmod 777 -R /workspace/bionemo2/
+
+# Transformer engine attention defaults
+ENV NVTE_FUSED_ATTN=1 NVTE_FLASH_ATTN=0
