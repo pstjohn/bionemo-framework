@@ -301,9 +301,59 @@ python scripts/protein/esm2/esm2_pretrain.py \
     --num-layers 33 \
     --hidden-size 1280 \
     --num-attention-head 20 \
-    --ffn-hidden-size 5120
+    --ffn-hidden-size 5120 \
+    --tensor-model-parallel-size 1 \
+    --create-tensorboard-logger \
+    --wandb_project=__your_wandb_project__ \
+    --experiment-name=__your_wandb_experiment_name
 ```
+
+This script will automatically create `./results` and store the checkpoints under `esm2`. Automatic pretraining resumption is handled automatically when `--resume-if-exists` set to True, and `--restore-from-checkpoint-path` is available if users want to restore from a specific path.
+
+!!! note "Weight And Biases"
+
+    If intend to use `--wandb_project`, users should log in Weight and Biases or alternatively export the environment variable `WANDB_API_KEY`. If not provided, the logger will be disabled.
 
 !!! note "Non-critical Warnings from Command Line Runs"
 
     Users might experience `torch._dynamo.convert_frame` warning messages and depreciation warning on `async_grad_allreduce` from Megatron-LM. Users can safely ignore them and is non-critical to pretraining.
+
+## Recommended Pretraining Configuration
+We benchmark our implementation on the following model sizes[^1]. These parameters are handled by
+
+| Model Size | # Layers | Hidden Size | # Attention Heads | FFN Hidden Size |
+|------------|----------|-------------|-------------------|-----------------|
+| 8M         | 8        | 320         | 20                | 1280            |
+| 650M       | 33       | 1280        | 20                | 5120            |
+| 3B         | 36       | 2560        | 40                | 10240           |
+| 15B        | 48       | 5120        | 40                | 20480           |
+
+In our current benchmark, we recommend the following trainiing and device configurations on A100 80GB GPUs to match with the published 2M token global batch size.
+
+| Model Size | # GPUs | Micro Batch Size | Tensor Model Parallel Size |
+|------------|--------|------------------|----------------------------|
+| 8M         | 32     | 64               | 1                          |
+| 650M       | 64     | 32               | 1                          |
+| 3B         | 128    | 16               | 1                          |
+| 15B        | 3120   | 2                | 2                          |
+
+!!! note "Additional Notes on Micro Batch Size"
+
+    While the above micro batch sizes are selected in 2^n to arrive at 2,097,152 tokens global batch size, users should observe performance boost by fitting the largest possible micro batch size onto the device without OOM. The currently largest batch sizes are listed below.
+
+    | Model Size | Max. micro batch size | Tensor Model Parallel Size |
+    |------------|-----------------------|----------------------------|
+    | 8M         | 70                    | 1                          |
+    | 650M       | 48                    | 1                          |
+    | 3B         | 16                    | 1                          |
+    | 15B        | 3                     | 2                          |
+
+    The only exception is 15B model where the authors reported 3.2M tokens global batch size. We arrived at 3,194,880 tokens on 390 A100 nodes.
+
+Maximum micro batch sizes for these model sizes are tested on 2 nodes of A100 80GB GPUs.
+
+!!! note "Memory Allocation from Distributed Optimizer"
+
+    Distributed optimizer is enabled by default for improved memory allocation. Users might observe that the same micro batch size used on multi-device pretraining results in OOM on a single device. If additional optimization is necessary, we recommend running short benchmark on the same number of devices as in the production run.
+
+[^1]: Lin, Zeming, Halil Akin, Roshan Rao, Brian Hie, Zhongkai Zhu, Wenting Lu, Nikita Smetanin, et al. “Evolutionary-Scale Prediction of Atomic-Level Protein Structure with a Language Model.” Science 379, no. 6637 (March 17, 2023): 1123–30. https://doi.org/10.1126/science.ade2574
