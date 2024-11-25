@@ -81,6 +81,7 @@ logger = logging.getLogger(__file__)
 _OVERRIDE_BIOBERT_CONFIG_DEFAULTS: List[str] = OVERRIDE_BIONEMO_CONFIG_DEFAULTS + [
     "return_only_hidden_states",
     "include_embeddings",
+    "include_input_ids",
     "include_hiddens",
     # Model parallelism settings! Important to override these if the user requests different settings from how
     #  a model was trained (common). See https://github.com/NVIDIA/bionemo-framework/issues/275
@@ -164,6 +165,7 @@ class MegatronBioBertModel(LanguageModule):
         include_embeddings: bool = False,
         use_full_attention_mask: bool = False,
         include_hiddens: bool = False,
+        include_input_ids: bool = False,
         skip_logits: bool = False,  # Useful for inference time.
     ):
         # TODO (@jstjohn) come up with a cleaner way for this model to return a set of things the user wants.
@@ -195,6 +197,7 @@ class MegatronBioBertModel(LanguageModule):
         self.return_embeddings = return_embeddings
         self.include_embeddings = include_embeddings
         self.include_hiddens = include_hiddens
+        self.include_input_ids = include_input_ids
         self.skip_logits = skip_logits
 
         # megatron core pipelining currently depends on model type
@@ -397,7 +400,11 @@ class MegatronBioBertModel(LanguageModule):
         rotary_pos_emb = None
         if self.position_embedding_type == "rope":
             rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
-                inference_params, self.encoder, encoder_input, self.config
+                inference_params,
+                self.encoder,
+                encoder_input,
+                self.config,
+                packed_seq_params=None,  # TODO @sichu: upstream to Megatron-LM
             )
             rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
 
@@ -449,6 +456,8 @@ class MegatronBioBertModel(LanguageModule):
         output = {"token_logits": logits, "binary_logits": binary_logits}
         if self.include_hiddens:
             output["hidden_states"] = hidden_states.transpose(0, 1).contiguous()  # [s b h] => [b s h]
+        if self.include_input_ids:
+            output["input_ids"] = input_ids
         if self.include_embeddings:
             output["embeddings"] = output_embeddings
         return output
@@ -511,6 +520,7 @@ class BioBertConfig(
     include_embeddings: bool = False
     return_only_hidden_states: bool = False
     include_hiddens: bool = False  # Include hidden layers in the output of the model
+    include_input_ids: bool = False
     skip_logits: bool = False  # useful for inference
     core_attention_override: Type[torch.nn.Module] | None = None
 
@@ -525,8 +535,7 @@ class BioBertConfig(
                 self.num_layers // p_size
             ) % vp_size == 0, "Make sure the number of model chunks is the same across all pipeline stages."
 
-        # The local specs all require the standard full attention mask. For transformer engine only the NVTE_FLASH_ATTN=0
-        #  option requires this full attention mask.
+        # The local specs all require the standard full attention mask.
         use_full_attention_mask: bool = "transformer_engine" not in self.biobert_spec_option
         do_next_sentence = False
         if self.model_cls is None:
@@ -562,6 +571,7 @@ class BioBertConfig(
             use_full_attention_mask=use_full_attention_mask,
             include_hiddens=self.include_hiddens,
             skip_logits=self.skip_logits,
+            include_input_ids=self.include_input_ids,
         )
         # TODO (@skothenhill) this is a hack to load the old checkpoint.
         # This should be removed once we have a proper checkpoint conversion

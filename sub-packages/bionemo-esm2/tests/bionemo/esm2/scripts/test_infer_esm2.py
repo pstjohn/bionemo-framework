@@ -18,13 +18,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
-from esm2_infer import infer_model
 from torch.utils.data import DataLoader
 
 from bionemo.core.data.load import load
 from bionemo.esm2.api import ESM2Config
 from bionemo.esm2.data.tokenizer import get_tokenizer
 from bionemo.esm2.model.finetune.datamodule import ESM2FineTuneDataModule, InMemoryCSVDataset
+from bionemo.esm2.scripts.infer_esm2 import infer_model
 
 
 esm2_650m_checkpoint_path = load("esm2/650m:2.0")
@@ -135,8 +135,9 @@ def test_infer_runs(tmpdir, dummy_protein_csv, dummy_protein_sequences):
         min_seq_length=max_dataset_seq_len,
         include_hiddens=True,
         include_embeddings=True,
+        include_input_ids=True,
         include_logits=True,
-        micro_batch_size=2,
+        micro_batch_size=3,  # dataset length (10) is not multiple of 3; this validates partial batch inference
         # config_class=SUPPORTED_CONFIGS[config_class_name],
         config_class=ESM2Config,
     )
@@ -144,11 +145,13 @@ def test_infer_runs(tmpdir, dummy_protein_csv, dummy_protein_sequences):
 
     results = torch.load(results_path)
     assert isinstance(results, dict)
-    keys_included = ["token_logits", "hidden_states", "embeddings", "binary_logits"]
+    keys_included = ["token_logits", "hidden_states", "embeddings", "binary_logits", "input_ids"]
     assert all(key in results for key in keys_included)
     assert results["binary_logits"] is None
     assert results["embeddings"].shape[0] == len(dummy_protein_sequences)
     # hidden_states are [batch, sequence, hidden_dim]
     assert results["hidden_states"].shape[:-1] == (len(dummy_protein_sequences), max_dataset_seq_len)
+    # input_ids are [batch, sequence]
+    assert results["input_ids"].shape == (len(dummy_protein_sequences), max_dataset_seq_len)
     # token_logits are [sequence, batch, num_tokens]
     assert results["token_logits"].shape[:-1] == (max_dataset_seq_len, len(dummy_protein_sequences))

@@ -51,6 +51,7 @@ def infer_model(
     include_hiddens: bool = False,
     include_embeddings: bool = False,
     include_logits: bool = False,
+    include_input_ids: bool = False,
     micro_batch_size: int = 64,
     precision: PrecisionTypes = "bf16-mixed",
     tensor_model_parallel_size: int = 1,
@@ -68,6 +69,8 @@ def infer_model(
         min_seq_length (int): minimum sequence length to be padded. This should be at least equal to the length of largest sequence in the dataset
         include_hiddens (bool, optional): Whether to include hidden states in the output. Defaults to False.
         include_embeddings (bool, optional): Whether to include embeddings in the output. Defaults to False.
+        include_logits (bool, Optional): Whether to include token logits in the output. Defaults to False.
+        include_input_ids (bool, Optional): Whether to include input_ids in the output. Defaults to False.
         micro_batch_size (int, optional): Micro batch size for inference. Defaults to 64.
         precision (PrecisionTypes, optional): Precision type for inference. Defaults to "bf16-mixed".
         tensor_model_parallel_size (int, optional): Tensor model parallel size for distributed inference. Defaults to 1.
@@ -121,6 +124,7 @@ def infer_model(
         autocast_dtype=get_autocast_dtype(precision),
         include_hiddens=include_hiddens,
         include_embeddings=include_embeddings,
+        include_input_ids=include_input_ids,
         skip_logits=not include_logits,
         tensor_model_parallel_size=tensor_model_parallel_size,
         pipeline_model_parallel_size=pipeline_model_parallel_size,
@@ -138,7 +142,7 @@ def infer_model(
     torch.save(results_dict, results_path)
 
 
-def esm2_infer_entrypoint():
+def infer_esm2_entrypoint():
     """Entrypoint for running inference on a geneformer checkpoint and data."""
     # 1. get arguments
     parser = get_parser()
@@ -151,6 +155,7 @@ def esm2_infer_entrypoint():
         include_hiddens=args.include_hiddens,
         include_embeddings=args.include_embeddings,
         include_logits=args.include_logits,
+        include_input_ids=args.include_input_ids,
         micro_batch_size=args.micro_batch_size,
         precision=args.precision,
         tensor_model_parallel_size=args.tensor_model_parallel_size,
@@ -228,6 +233,12 @@ def get_parser():
         help="Include hiddens in output of inference",
     )
     parser.add_argument(
+        "--include-input-ids",
+        action="store_true",
+        default=False,
+        help="Include input_ids in output of inference",
+    )
+    parser.add_argument(
         "--include-embeddings",
         action="store_true",
         default=False,
@@ -260,4 +271,4 @@ def get_parser():
 
 
 if __name__ == "__main__":
-    esm2_infer_entrypoint()
+    infer_esm2_entrypoint()
