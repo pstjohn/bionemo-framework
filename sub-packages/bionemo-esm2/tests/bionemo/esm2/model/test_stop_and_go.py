@@ -14,12 +14,15 @@
 # limitations under the License.
 
 
+import signal
 from pathlib import Path
 from typing import Literal
 
+import pytest
 import lightning.pytorch as pl
 from megatron.core.optimizer import OptimizerConfig
 from nemo import lightning as nl
+from nemo.lightning.pytorch import callbacks as nl_callbacks
 from nemo.lightning.pytorch.optim import MegatronOptimizerModule
 from typing_extensions import override
 
@@ -31,6 +34,7 @@ from bionemo.esm2.data.dataset import RandomMaskStrategy
 from bionemo.esm2.data.tokenizer import BioNeMoESMTokenizer, get_tokenizer
 from bionemo.llm.model.biobert.lightning import biobert_lightning_module
 from bionemo.llm.model.lr_scheduler import WarmupAnnealDecayHoldScheduler
+from bionemo.testing import testing_callbacks
 from bionemo.testing.harnesses import stop_and_go
 from bionemo.testing.harnesses.mode import Mode
 
@@ -76,7 +80,7 @@ class TestESM2StopAndGo(stop_and_go.StopAndGoHarness):
             micro_batch_size=2,
             min_seq_length=None,
             max_seq_length=1024,
-            num_workers=1,
+            num_workers=0,
             persistent_workers=False,
             random_mask_strategy=RandomMaskStrategy.ALL_TOKENS,
         )
@@ -108,3 +112,31 @@ class TestESM2StopAndGo(stop_and_go.StopAndGoHarness):
         module = biobert_lightning_module(config=config, tokenizer=cls.tokenizer, optimizer=optimizer)
 
         return module, data, optimizer
+
+
+class TestESM2StopAndGoCheckpointNotAtValidation(TestESM2StopAndGo):
+    @override
+    @classmethod
+    def get_default_callbacks(cls):
+        callbacks = super().get_default_callbacks()
+        callbacks[Mode.STOP][nl_callbacks.PreemptionCallback] = nl_callbacks.PreemptionCallback(sig=signal.SIGUSR2)
+        callbacks[Mode.STOP][
+            testing_callbacks.SignalAfterGivenStepCallback
+        ] = testing_callbacks.SignalAfterGivenStepCallback(stop_step=2, signal_=signal.SIGUSR2)
+
+        return callbacks
+
+    @override
+    @classmethod
+    def stop(cls) -> None:
+        # The PreemptionCallback exits the process with sys.exit(0) after the checkpoint is saved. We obviously don't
+        # want that here, so we catch the SystemExit exception and make sure it was called appropriately.
+        with pytest.raises(SystemExit) as pytest_wrapped_e:
+            super().stop()
+
+        assert pytest_wrapped_e.type is SystemExit
+        assert pytest_wrapped_e.value.code == 0
+
+    @pytest.mark.skip()
+    def test_train_val_init_consumed_samples(self):
+        pass

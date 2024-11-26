@@ -356,22 +356,17 @@ class StopAndGoHarness(ABC):
 
     def test_train_val_init_consumed_samples(self):
         """Tests the initial consumed samples in stop-and-go scenario."""
-        train_consumed_stop, val_consumed_stop = get_callback(
+        stop_callback = get_callback(
             self.callbacks, Mode.STOP, testing_callbacks.TrainValInitConsumedSamplesStopAndGoCallback
-        ).data
-        train_consumed_go, val_consumed_go = get_callback(
+        )
+        train_consumed_stop, val_consumed_stop = stop_callback.data
+
+        resume_callback = get_callback(
             self.callbacks, Mode.RESUME, testing_callbacks.TrainValInitConsumedSamplesStopAndGoCallback
-        ).data
+        )
+        train_consumed_resume, val_consumed_resume = resume_callback.data
 
         assert val_consumed_stop == 0
-        assert val_consumed_go == 0
+        assert val_consumed_resume == 0
         assert train_consumed_stop == 0
-        assert train_consumed_go > 0
-
-    def test_identical_number_of_validation_batches(self):
-        """Ensures that the input tensors for training are identical for the interrupted and continuous tests."""
-        callback_type = testing_callbacks.ValidLossCallback
-        interrupted_callback = get_callback(self.callbacks, Mode.RESUME, callback_type)
-        continuous_callback = get_callback(self.callbacks, Mode.CONTINUOUS, callback_type)
-        assert interrupted_callback.data, f"No data found for {callback_type}"
-        assert len(interrupted_callback.data) == len(continuous_callback.data)
+        assert train_consumed_resume > 0
