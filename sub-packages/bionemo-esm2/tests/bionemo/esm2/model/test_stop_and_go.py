@@ -158,6 +158,9 @@ class TestESM2StopAndGoCheckpointNotAtValidation(TestESM2StopAndGo):
             testing_callbacks.ValidLossCallback,
             testing_callbacks.ValidOutputCallback,
         ]:
+            # On resumption from a checkpoint that wasn't created at the end of validation, the validation interval is
+            # shifted in the subsequent training jobs. See this slack thread for more details:
+            # https://nvidia.slack.com/archives/C074Z808N05/p1733171223813409
             pytest.xfail(reason="Currently seeing issues in validation timing with PreemptionCallback")
         super().test_stop_and_go_consistency(callback_type)
 
