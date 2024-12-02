@@ -37,6 +37,7 @@ from bionemo.llm.model.lr_scheduler import WarmupAnnealDecayHoldScheduler
 from bionemo.testing import testing_callbacks
 from bionemo.testing.harnesses import stop_and_go
 from bionemo.testing.harnesses.mode import Mode
+from bionemo.testing.torch import recursive_assert_approx_equal
 
 
 MODEL_PRECISION: Literal["bf16-mixed"] = "bf16-mixed"
@@ -167,3 +168,18 @@ class TestESM2StopAndGoCheckpointNotAtValidation(TestESM2StopAndGo):
     @pytest.mark.skip(reason="We don't expect the STOP variant to hit on_valid_epoch_end before stopping.")
     def test_train_val_init_consumed_samples(self):
         pass
+
+    def test_all_valid_batch_inputs_are_identical(self):
+        """A watered-down version of test_stop_and_go_consistency's ValidInputCallback that only checks whether the
+        first batches are the same, not the over length."""
+
+        valid_inputs_interrupted = stop_and_go.get_callback(
+            self.callbacks, Mode.RESUME, testing_callbacks.ValidInputCallback
+        ).data
+        valid_inputs_continuous = stop_and_go.get_callback(
+            self.callbacks, Mode.CONTINUOUS, testing_callbacks.ValidInputCallback
+        ).data
+
+        min_len = min(len(valid_inputs_interrupted), len(valid_inputs_continuous))
+        assert min_len
+        recursive_assert_approx_equal(valid_inputs_interrupted[:min_len], valid_inputs_continuous[:min_len])
