@@ -356,18 +356,14 @@ class StopAndGoHarness(ABC):
 
     def test_train_val_init_consumed_samples(self):
         """Tests the initial consumed samples in stop-and-go scenario."""
-        stop_callback = get_callback(
+        train_consumed_stop, val_consumed_stop = get_callback(
             self.callbacks, Mode.STOP, testing_callbacks.TrainValInitConsumedSamplesStopAndGoCallback
-        )
-        print(stop_callback.data)
-        train_consumed_stop, val_consumed_stop = stop_callback.data
-
-        resume_callback = get_callback(
+        ).data
+        train_consumed_go, val_consumed_go = get_callback(
             self.callbacks, Mode.RESUME, testing_callbacks.TrainValInitConsumedSamplesStopAndGoCallback
-        )
-        train_consumed_resume, val_consumed_resume = resume_callback.data
+        ).data
 
         assert val_consumed_stop == 0
-        assert val_consumed_resume == 0
+        assert val_consumed_go == 0
         assert train_consumed_stop == 0
-        assert train_consumed_resume > 0
+        assert train_consumed_go > 0
