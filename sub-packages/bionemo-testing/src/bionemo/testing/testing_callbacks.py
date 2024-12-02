@@ -202,7 +202,6 @@ class ValidLossCallback(BaseInterruptedVsContinuousCallback):
     ) -> None:
         """Get consumed samples as metadata."""
         if step.trainer.validating:
-            print("In ValidLossCallback")
             self.data.append(recursive_detach(reduced))
 
 
