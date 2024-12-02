@@ -359,6 +359,7 @@ class StopAndGoHarness(ABC):
         stop_callback = get_callback(
             self.callbacks, Mode.STOP, testing_callbacks.TrainValInitConsumedSamplesStopAndGoCallback
         )
+        print(stop_callback.data)
         train_consumed_stop, val_consumed_stop = stop_callback.data
 
         resume_callback = get_callback(

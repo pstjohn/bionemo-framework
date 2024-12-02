@@ -54,15 +54,11 @@ class SignalAfterGivenStepCallback(Callback, CallbackMethods):
         self.stop_step = stop_step
         self.signal = signal_
 
-    def on_megatron_step_end(
-        self,
-        step: MegatronStep,
-        microbatch_outputs: List[Any],
-        reduced: Optional[Union[torch.Tensor, Dict[str, torch.Tensor]]] = None,
-    ) -> None:
+    def on_megatron_step_start(self, step: MegatronStep) -> MegatronStep:
         """Stop training if the global step is greater than or equal to the stop_step."""
         if step.trainer.global_step >= self.stop_step:
             os.kill(os.getpid(), self.signal)
+        return step
 
 
 class BaseInterruptedVsContinuousCallback(Callback, CallbackMethods, io.IOMixin):

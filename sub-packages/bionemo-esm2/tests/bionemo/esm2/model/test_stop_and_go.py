@@ -137,6 +137,30 @@ class TestESM2StopAndGoCheckpointNotAtValidation(TestESM2StopAndGo):
         assert pytest_wrapped_e.type is SystemExit
         assert pytest_wrapped_e.value.code == 0
 
-    @pytest.mark.skip()
+    @pytest.mark.parametrize(
+        "callback_type",
+        [
+            testing_callbacks.LearningRateCallback,
+            testing_callbacks.GlobalStepStateCallback,
+            testing_callbacks.ConsumedSamplesCallback,
+            testing_callbacks.OptimizerStateCallback,
+            testing_callbacks.TrainInputCallback,
+            testing_callbacks.TrainOutputCallback,
+            testing_callbacks.TrainLossCallback,
+            testing_callbacks.ValidInputCallback,
+            testing_callbacks.ValidOutputCallback,
+            testing_callbacks.ValidLossCallback,
+        ],
+    )
+    def test_stop_and_go_consistency(self, callback_type):
+        if callback_type in [
+            testing_callbacks.ValidInputCallback,
+            testing_callbacks.ValidLossCallback,
+            testing_callbacks.ValidOutputCallback,
+        ]:
+            pytest.xfail(reason="Currently seeing issues in validation timing with PreemptionCallback")
+        super().test_stop_and_go_consistency(callback_type)
+
+    @pytest.mark.skip(reason="We don't expect the STOP variant to hit on_valid_epoch_end before stopping.")
     def test_train_val_init_consumed_samples(self):
         pass
