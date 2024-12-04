@@ -33,4 +33,4 @@ for dir in docs/ ./sub-packages/bionemo-*/; do
 done
 
 python -m coverage combine
-python -m coverage report -m
+python -m coverage report --show-missing
