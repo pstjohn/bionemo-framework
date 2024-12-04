@@ -18,8 +18,8 @@ import signal
 from pathlib import Path
 from typing import Literal
 
-import pytest
 import lightning.pytorch as pl
+import pytest
 from megatron.core.optimizer import OptimizerConfig
 from nemo import lightning as nl
 from nemo.lightning.pytorch import callbacks as nl_callbacks
@@ -121,9 +121,9 @@ class TestESM2StopAndGoCheckpointNotAtValidation(TestESM2StopAndGo):
     def get_default_callbacks(cls):
         callbacks = super().get_default_callbacks()
         callbacks[Mode.STOP][nl_callbacks.PreemptionCallback] = nl_callbacks.PreemptionCallback(sig=signal.SIGUSR2)
-        callbacks[Mode.STOP][
-            testing_callbacks.SignalAfterGivenStepCallback
-        ] = testing_callbacks.SignalAfterGivenStepCallback(stop_step=2, signal_=signal.SIGUSR2)
+        callbacks[Mode.STOP][testing_callbacks.SignalAfterGivenStepCallback] = (
+            testing_callbacks.SignalAfterGivenStepCallback(stop_step=2, signal_=signal.SIGUSR2)
+        )
 
         return callbacks
 
@@ -162,7 +162,10 @@ class TestESM2StopAndGoCheckpointNotAtValidation(TestESM2StopAndGo):
             # On resumption from a checkpoint that wasn't created at the end of validation, the validation interval is
             # shifted in the subsequent training jobs. See this slack thread for more details:
             # https://nvidia.slack.com/archives/C074Z808N05/p1733171223813409
-            pytest.xfail(reason="Currently seeing issues in validation timing with PreemptionCallback")
+            pytest.xfail(
+                reason="Currently seeing issues in validation timing with PreemptionCallback. "
+                "See https://nvbugspro.nvidia.com/bug/4994415F."
+            )
         super().test_stop_and_go_consistency(callback_type)
 
     @pytest.mark.skip(reason="We don't expect the STOP variant to hit on_valid_epoch_end before stopping.")
