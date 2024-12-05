@@ -38,6 +38,9 @@ gpgv codecov.SHA256SUM.sig codecov.SHA256SUM
 shasum -a 256 -c codecov.SHA256SUM
 sudo chmod +x codecov
 
+# If pytests fail, we still want to ensure that the report is uploaded to codecov, so we set +e from here through the
+# upload.
+set +e
 for dir in docs/ ./sub-packages/bionemo-*/; do
     echo "Running pytest in $dir"
     pytest -v --nbval-lax --cov=bionemo --cov-append --junitxml=$(basename $dir).junit.xml -o junit_family=legacy $dir
@@ -51,3 +54,4 @@ junitparser merge *.junit.xml combined.junit.xml
 
 # Upload coverage results to codecov.
 ./codecov upload-process
+set -e
