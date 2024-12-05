@@ -61,20 +61,25 @@ fi
 # If pytests fail, we still want to ensure that the report is uploaded to codecov, so we set +e from here through the
 # upload.
 set +e
+error=false
 for dir in docs/ ./sub-packages/bionemo-*/; do
     echo "Running pytest in $dir"
-    pytest -v --nbval-lax --cov=bionemo --cov-append --junitxml=$(basename $dir).junit.xml -o junit_family=legacy $dir
+    pytest -v --nbval-lax --cov=bionemo --cov-append --junitxml=$(basename $dir).junit.xml -o junit_family=legacy $dir || error=true
 done
 
 # Merge all sub-directory test results into a single xml file.
-junitparser merge *.junit.xml combined.junit.xml
+junitparser merge *.junit.xml combined.junit.xml || error=true
 
 if [[ $CODECOV_DISABLED -eq 0 ]]; then
+
     # Upload test analytics to codecov.
-    ./codecov do-upload --report-type test_results --file combined.junit.xml
+    ./codecov do-upload --commit-sha $(git rev-parse HEAD) --report-type test_results --file combined.junit.xml || error=true
 
     # Upload coverage results to codecov.
-    ./codecov upload-process
+    ./codecov upload-process --commit-sha $(git rev-parse HEAD) || error=true
 fi
-
 set -e
+
+if [ "$error" = true ]; then
+    exit 1
+fi
