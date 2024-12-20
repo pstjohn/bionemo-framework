@@ -263,7 +263,7 @@ class InMemoryPerTokenValueDataset(Dataset):
 
         # for multi-class (mutually exclusive) classification with CrossEntropyLoss
         tokenized_labels = label_ids
-        cls_eos = torch.tensor(self.label_padding_value, dtype=tokenized_labels.dtype)
+        cls_eos = torch.tensor([self.label_padding_value], dtype=tokenized_labels.dtype)
 
         # add cls / eos label ids with padding value -100 to have the same shape as tokenized_sequence
         labels = torch.cat((cls_eos, tokenized_labels, cls_eos))
