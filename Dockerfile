@@ -103,12 +103,22 @@ ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:${PATH}"
 ENV RUSTUP_HOME="/usr/local/rustup"
 
 # Note, we need to mount the .git folder here so that setuptools-scm is able to fetch git tag for version.
+# Includes a hack to install tensorstore 0.1.45, which doesn't distribute a pypi wheel for python 3.12, and the metadata
+# in the source distribution doesn't match the expected pypi version.
 RUN --mount=type=bind,source=./.git,target=./.git \
   --mount=type=bind,source=./requirements-test.txt,target=/requirements-test.txt \
   --mount=type=bind,source=./requirements-cve.txt,target=/requirements-cve.txt \
   <<EOF
 set -eo pipefail
 uv pip install maturin --no-build-isolation --break-system-packages
+
+pip install --use-deprecated=legacy-resolver  --no-build-isolation --break-system-packages \
+  tensorstore==0.1.45
+sed -i 's/^Version: 0\.0\.0$/Version: 0.1.45/' \
+  /usr/local/lib/python3.12/dist-packages/tensorstore-0.0.0.dist-info/METADATA
+mv /usr/local/lib/python3.12/dist-packages/tensorstore-0.0.0.dist-info \
+/usr/local/lib/python3.12/dist-packages/tensorstore-0.1.45.dist-info
+
 uv pip install --no-build-isolation --break-system-packages \
   ./3rdparty/* \
   ./sub-packages/bionemo-* \
