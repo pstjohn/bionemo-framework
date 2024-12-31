@@ -76,18 +76,21 @@ RUN rm -rf /opt/pytorch/pytorch/third_party/onnx
 
 
 # Use UV to install python packages from the workspace. This just installs packages into the system's python
-# environment, and does not use the current uv.lock file.
+# environment, and does not use the current uv.lock file. Note that with python 3.12, we now need to set
+# UV_BREAK_SYSTEM_PACKAGES, since the pytorch base image has made the decision not to use a virtual environment and UV
+# does not respect the PIP_BREAK_SYSTEM_PACKAGES environment variable set in the base dockerfile.
 COPY --from=ghcr.io/astral-sh/uv:0.4.25 /uv /usr/local/bin/uv
 ENV UV_LINK_MODE=copy \
   UV_COMPILE_BYTECODE=1 \
   UV_PYTHON_DOWNLOADS=never \
   UV_SYSTEM_PYTHON=true \
-  UV_NO_CACHE=1
+  UV_NO_CACHE=1 \
+  UV_BREAK_SYSTEM_PACKAGES=1
 
-# Install the bionemo-geomtric requirements ahead of copying over the rest of the repo, so that we can cache their
+# Install the bionemo-geometric requirements ahead of copying over the rest of the repo, so that we can cache their
 # installation. These involve building some torch extensions, so they can take a while to install.
 RUN --mount=type=bind,source=./sub-packages/bionemo-geometric/requirements.txt,target=/requirements-pyg.txt \
-  uv pip install --break-system-packages --no-build-isolation -r /requirements-pyg.txt
+  uv pip install --no-build-isolation -r /requirements-pyg.txt
 
 WORKDIR /workspace/bionemo2
 
@@ -110,16 +113,16 @@ RUN --mount=type=bind,source=./.git,target=./.git \
   --mount=type=bind,source=./requirements-cve.txt,target=/requirements-cve.txt \
   <<EOF
 set -eo pipefail
-uv pip install maturin --no-build-isolation --break-system-packages
+uv pip install maturin --no-build-isolation
 
-pip install --use-deprecated=legacy-resolver  --no-build-isolation --break-system-packages \
+pip install --use-deprecated=legacy-resolver  --no-build-isolation \
   tensorstore==0.1.45
 sed -i 's/^Version: 0\.0\.0$/Version: 0.1.45/' \
   /usr/local/lib/python3.12/dist-packages/tensorstore-0.0.0.dist-info/METADATA
 mv /usr/local/lib/python3.12/dist-packages/tensorstore-0.0.0.dist-info \
 /usr/local/lib/python3.12/dist-packages/tensorstore-0.1.45.dist-info
 
-uv pip install --no-build-isolation --break-system-packages \
+uv pip install --no-build-isolation \
   ./3rdparty/* \
   ./sub-packages/bionemo-* \
   -r /requirements-cve.txt \
@@ -185,7 +188,7 @@ ENV RUSTUP_HOME="/usr/local/rustup"
 RUN --mount=type=bind,source=./requirements-dev.txt,target=/workspace/bionemo2/requirements-dev.txt \
   --mount=type=cache,id=uv-cache,target=/root/.cache,sharing=locked <<EOF
   set -eo pipefail
-  uv pip install -r /workspace/bionemo2/requirements-dev.txt --break-system-packages
+  uv pip install -r /workspace/bionemo2/requirements-dev.txt
   rm -rf /tmp/*
 EOF
 
@@ -218,9 +221,9 @@ ENV RUSTUP_HOME="/usr/local/rustup"
 RUN <<EOF
 set -eo pipefail
 find . -name __pycache__ -type d -print | xargs rm -rf
-uv pip install --break-system-packages --no-build-isolation --editable ./internal/infra-bionemo
+uv pip install --no-build-isolation --editable ./internal/infra-bionemo
 for sub in ./3rdparty/* ./sub-packages/bionemo-*; do
-    uv pip install --break-system-packages --no-deps --no-build-isolation --editable $sub
+    uv pip install --no-deps --no-build-isolation --editable $sub
 done
 EOF
 
