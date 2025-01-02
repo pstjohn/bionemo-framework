@@ -127,9 +127,11 @@ uv pip install --no-build-isolation \
   ./sub-packages/bionemo-* \
   -r /requirements-cve.txt \
   -r /requirements-test.txt
+
 rm -rf ./3rdparty
 rm -rf /tmp/*
 rm -rf ./sub-packages/bionemo-noodles/target
+rm -rf /root/.cache/*
 EOF
 
 # In the devcontainer image, we just copy over the finished `dist-packages` folder from the build image back into the
