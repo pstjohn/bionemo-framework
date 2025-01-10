@@ -51,6 +51,9 @@ def dummy_parquet_train_val_inputs(tmp_path):
     return train_cluster_path, valid_cluster_path
 
 
+@pytest.mark.skip(
+    "TODO: These tests currently take an inordinate amount of time. See https://jirasw.nvidia.com/browse/BIONEMO-553"
+)
 def test_pretrain_pydantic_cli(dummy_protein_dataset, dummy_parquet_train_val_inputs, tmpdir):
     result_dir = tmpdir.mkdir("results")
     train_cluster_path, valid_cluster_path = dummy_parquet_train_val_inputs

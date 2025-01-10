@@ -42,6 +42,9 @@ def test_bionemo2_rootdir(data_path):
     assert data_path.is_dir(), f"Test data directory is supposed to be a directory.\n{data_error_str}"
 
 
+@pytest.mark.skip(
+    "TODO: These tests currently take an inordinate amount of time. See https://jirasw.nvidia.com/browse/BIONEMO-553"
+)
 def test_pretrain_cli_from_ckpt(tmpdir, data_path):
     # Same as test_pretrain, but includes a checkpoint to initialize from.
     result_dir = Path(tmpdir.mkdir("results"))
@@ -83,6 +86,9 @@ def test_pretrain_cli_from_ckpt(tmpdir, data_path):
     assert (result_dir / "test-experiment").exists(), "Could not find test experiment directory."
 
 
+@pytest.mark.skip(
+    "TODO: These tests currently take an inordinate amount of time. See https://jirasw.nvidia.com/browse/BIONEMO-553"
+)
 def test_pretrain_cli(tmpdir, data_path):
     """trains from scratch"""
     # data_path: Path = load("single_cell/testdata-20240506") / "cellxgene_2023-12-15_small" / "processed_data"
@@ -123,6 +129,9 @@ def test_pretrain_cli(tmpdir, data_path):
     assert (result_dir / "test-experiment").exists(), "Could not find test experiment directory."
 
 
+@pytest.mark.skip(
+    "TODO: These tests currently take an inordinate amount of time. See https://jirasw.nvidia.com/browse/BIONEMO-553"
+)
 def test_finetune_cli(tmpdir, data_path):
     """Uses CLI to invoke the entrypoint"""
     # data_path: Path = load("single_cell/testdata-20240506") / "cellxgene_2023-12-15_small" / "processed_data"
