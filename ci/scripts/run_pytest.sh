@@ -27,6 +27,7 @@ Usage: $(basename "$0") [OPTIONS]
 Options:
     --skip-docs    Skip running tests in the docs directory
     --no-nbval     Skip jupyter notebook validation tests
+    --skip-slow    Skip tests marked as slow (@pytest.mark.slow)
 
 Note: Documentation tests (docs/) are only run when notebook validation
       is enabled (--no-nbval not set) and docs are not skipped
@@ -48,6 +49,7 @@ export BIONEMO_DATA_SOURCE PYTHONDONTWRITEBYTECODE PYTORCH_CUDA_ALLOC_CONF
 declare -a coverage_files
 SKIP_DOCS=false
 NO_NBVAL=false
+SKIP_SLOW=false
 error=false
 
 # Parse command line arguments
@@ -55,6 +57,7 @@ while (( $# > 0 )); do
     case "$1" in
         --skip-docs) SKIP_DOCS=true ;;
         --no-nbval) NO_NBVAL=true ;;
+        --skip-slow) SLIP_SLOW=true ;;
         -h|--help) usage ;;
         *) echo "Unknown option: $1" >&2; usage 1 ;;
     esac
@@ -83,6 +86,7 @@ PYTEST_OPTIONS=(
     --cov-report=xml:coverage.xml
 )
 [[ "$NO_NBVAL" != true ]] && PYTEST_OPTIONS+=(--nbval-lax)
+[[ "$SKIP_SLOW" == true ]] && PYTEST_OPTIONS+=(-m "not slow")
 
 # Define test directories
 TEST_DIRS=(./sub-packages/bionemo-*/)
