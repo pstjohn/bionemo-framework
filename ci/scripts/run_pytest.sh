@@ -57,7 +57,7 @@ while (( $# > 0 )); do
     case "$1" in
         --skip-docs) SKIP_DOCS=true ;;
         --no-nbval) NO_NBVAL=true ;;
-        --skip-slow) SLIP_SLOW=true ;;
+        --skip-slow) SKIP_SLOW=true ;;
         -h|--help) usage ;;
         *) echo "Unknown option: $1" >&2; usage 1 ;;
     esac
