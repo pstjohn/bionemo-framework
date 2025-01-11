@@ -110,5 +110,16 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           working-directory: ${{ github.run_id }}
+
+  clean-up:
+    needs: run-tests
+    runs-on: self-hosted-nemo-gpus-1
+    if: ${{ always() }}
+    steps:
+      - name: clean up image
+        run: docker rmi nemoci.azurecr.io/bionemo:${{ github.run_id }}
+      - name: clean up working directory
+        run: rm -rf ${{ github.run_id }}
+
 # TODO: exclude tests from base image; run tests from github workspace mounted in the image.
 # TODO: upload coverage report to codecov.io
