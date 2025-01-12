@@ -96,6 +96,8 @@ jobs:
           path: ${{ github.run_id }}
 
       - name: Run tests
+        env:
+          BIONEMO_DATA_SOURCE: ngc
         run: ./ci/scripts/run_pytest.sh --no-nbval --skip-slow
 
       - name: Upload coverage to Codecov
