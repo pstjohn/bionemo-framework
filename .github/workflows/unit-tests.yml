@@ -72,15 +72,14 @@ jobs:
             type=raw,value=${{ github.run_id }}
 
       # This action sets up our cache-from and cache-to flags appropriately; see the README of this action for more
-      # info. It doesn't seem to cache correctly for merge_group events, so we need to add that as an extra argument.
-      # There's probably a slight optimization to be had here by caching from the pr- caches for merge_group events. See
-      # https://github.com/int128/docker-build-cache-config-action/issues/1005 for more info.
+      # info. It doesn't seem to cache correctly for merge_group events, so we need to add that as an extra argument in
+      # the step below. There's probably a slight optimization to be had here by caching from the pr- caches for
+      # merge_group events. See https://github.com/int128/docker-build-cache-config-action/issues/1005 for more info.
       - uses: int128/docker-build-cache-config-action@v1
         id: cache
         with:
           image: nemoci.azurecr.io/bionemo/build-cache
           pull-request-cache: true
-          extra-cache-from: ${{ github.event_name == 'merge_group' && 'nemoci.azurecr.io/bionemo/build-cache:main' || '' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -90,7 +89,9 @@ jobs:
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: ${{ steps.cache.outputs.cache-from }}
+          cache-from: |
+            ${{ steps.cache.outputs.cache-from }}
+            ${{ github.event_name == 'merge_group' && 'nemoci.azurecr.io/bionemo/build-cache:main' || '' }}
           cache-to: ${{ steps.cache.outputs.cache-to }}
 
   run-tests:
