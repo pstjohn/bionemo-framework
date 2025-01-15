@@ -69,6 +69,7 @@ jobs:
         with:
           image: nemoci.azurecr.io/bionemo/build-cache
           pull-request-cache: true
+          extra-cache-from: ${{ github.event_name == 'merge_group' && 'nemoci.azurecr.io/bionemo/build-cache:main' || '' }}
 
       - name: Build and push
         uses: docker/build-push-action@v5
