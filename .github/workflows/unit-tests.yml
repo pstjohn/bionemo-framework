@@ -113,13 +113,19 @@ jobs:
         with:
           path: ${{ github.run_id }}
 
+      - name: Check for notebook changes
+        id: check_notebooks
+        run: check_notebooks=$(git diff --quiet main HEAD -- '*.ipynb' && echo false || echo true) >> $GITHUB_ENV
+
       - name: Run tests
         env:
           BIONEMO_DATA_SOURCE: ngc
         run: ./ci/scripts/run_pytest.sh --no-nbval --skip-slow
 
       - name: Run notebook tests
-        if: ${{ contains(github.event.pull_request.labels.*.name, 'INCLUDE_NOTEBOOKS_TESTS') }}
+        if: |
+          ${{ env.STATE_check_notebooks == 'true' ||
+              contains(github.event.pull_request.labels.*.name, 'INCLUDE_NOTEBOOKS_TESTS') }}
         env:
           BIONEMO_DATA_SOURCE: ngc
         run: pytest --nbval-lax -p no:python docs/ sub-packages/
@@ -146,6 +152,5 @@ jobs:
     steps:
       - name: clean up image
         run: docker rmi nemoci.azurecr.io/bionemo:${{ github.run_id }}
-
 # TODO: exclude tests from base image; run tests from github workspace mounted in the image.
 # TODO: figure out way of cleaning up working directory (requires sudo or for us to fix file ownership from release container)
