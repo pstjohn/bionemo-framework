@@ -113,10 +113,12 @@ jobs:
         with:
           path: ${{ github.run_id }}
 
-      - name: Check for notebook changes
-        id: check_notebooks
-        run: check_notebooks=$(git diff --quiet main HEAD -- '*.ipynb' && echo false || echo true) >> $GITHUB_ENV
-
+      - name: Get all changed notebook files
+        id: changed-notebook-files
+        uses: tj-actions/changed-files@v45
+        with:
+          files: '**.ipynb'
+          
       - name: Run tests
         env:
           BIONEMO_DATA_SOURCE: ngc
@@ -124,9 +126,10 @@ jobs:
 
       - name: Run notebook tests
         if: |
-          ${{ env.STATE_check_notebooks == 'true' ||
+          ${{ steps.changed-notebook-files.outputs.any_changed == 'true' ||
               contains(github.event.pull_request.labels.*.name, 'INCLUDE_NOTEBOOKS_TESTS') }}
         env:
+          ALL_CHANGED_FILES: ${{ steps.changed-notebook-files.outputs.all_changed_files }}
           BIONEMO_DATA_SOURCE: ngc
         run: pytest --nbval-lax -p no:python docs/ sub-packages/
 
