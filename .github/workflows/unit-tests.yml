@@ -118,7 +118,7 @@ jobs:
         uses: tj-actions/changed-files@v45
         with:
           files: '**.ipynb'
-          
+
       - name: Run tests
         env:
           BIONEMO_DATA_SOURCE: ngc
