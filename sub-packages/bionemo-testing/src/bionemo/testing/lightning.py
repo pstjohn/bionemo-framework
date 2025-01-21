@@ -18,9 +18,15 @@ from typing import Dict
 
 import torch
 
+from bionemo.llm.data.collate import MLM_LOSS_IGNORE_INDEX
+
 
 def get_random_microbatch(
-    microbatch_size: int, max_sequence_length: int, vocab_size: int, seed: int
+    microbatch_size: int,
+    max_sequence_length: int,
+    vocab_size: int,
+    seed: int,
+    mask_index: int = MLM_LOSS_IGNORE_INDEX,
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     """Generate random microbatches for testing.
 
@@ -45,7 +51,7 @@ def get_random_microbatch(
     token_logits = torch.rand(
         max_sequence_length, microbatch_size, vocab_size, device=torch.cuda.current_device(), generator=generator
     )  # [s b v]
-    labels[loss_mask == 0] = -100  # propagate masking to labels
+    labels[loss_mask == 0] = mask_index  # propagate masking to labels
     microbatch_output = {
         "batch": {"labels": labels, "loss_mask": loss_mask},
         "forward_out": {"token_logits": token_logits},
