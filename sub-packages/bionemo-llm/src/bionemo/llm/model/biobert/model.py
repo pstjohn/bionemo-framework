@@ -541,14 +541,11 @@ class BioBertConfig(
         )
 
     def configure_model(self, tokenizer: AutoTokenizer) -> MegatronBioBertModelType:  # noqa: D102
-        self.vocab_size = get_vocab_size(self, tokenizer.vocab_size, self.make_vocab_size_divisible_by)
+        self.vocab_size = get_vocab_size(
+            self.transformer_config, tokenizer.vocab_size, self.make_vocab_size_divisible_by
+        )
 
-        vp_size = self.virtual_pipeline_model_parallel_size
-        if vp_size:
-            p_size = self.pipeline_model_parallel_size
-            assert (
-                self.transformer_config.num_layers // p_size
-            ) % vp_size == 0, "Make sure the number of model chunks is the same across all pipeline stages."
+        _assert_equal_pipeline_parallel_chunks(self.transformer_config)
 
         # The local specs all require the standard full attention mask.
         use_full_attention_mask: bool = "transformer_engine" not in self.biobert_spec_option
@@ -620,3 +617,13 @@ class BioBertConfig(
     def get_loss_reduction_class(self) -> Type[MegatronLossType]:  # noqa: D102
         # You could optionally return a different loss reduction class here based on the config settings.
         return self.loss_reduction_class
+
+
+def _assert_equal_pipeline_parallel_chunks(config: TransformerConfig) -> None:
+    """Ensure the number of model chunks is the same across all pipeline stages."""
+    vp_size = config.virtual_pipeline_model_parallel_size
+    if vp_size:
+        p_size = config.pipeline_model_parallel_size
+        assert (
+            config.num_layers // p_size
+        ) % vp_size == 0, "Make sure the number of model chunks is the same across all pipeline stages."
