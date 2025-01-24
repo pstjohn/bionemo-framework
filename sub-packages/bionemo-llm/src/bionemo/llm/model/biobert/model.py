@@ -180,7 +180,7 @@ class MegatronBioBertModel(LanguageModule):
         #  hidden states, embeddings, logits, etc. The defaults should work for training but we need to make it
         #  customizable and easy to tell how to make it work well for inference as well as trouble shooting.
         #  Also make sure that everything returned that the user wants gets transposed to the b,s,h format.
-        super(MegatronBioBertModel, self).__init__(config=config)
+        super(MegatronBioBertModel, self).__init__(config=config.transformer_config)
         self.add_binary_head = add_binary_head
         self.skip_logits = skip_logits
         if return_embeddings:
@@ -232,7 +232,7 @@ class MegatronBioBertModel(LanguageModule):
 
         # Transformer.
         self.encoder = TransformerBlock(
-            config=self.config,
+            config=config.transformer_config,
             spec=self.config.transformer_layer_spec,
             pre_process=self.pre_process,
             post_process=self.post_process,  # NOTE: in bionemo1 this is hard-coded to True
@@ -483,27 +483,22 @@ class BioBertConfig(
     `configure_model()` is ultimately called by the LightningModule using PTL lightning module hooks.
     """
 
-    # From megatron.core.models.gpt.bert_model.GPTModel
-    kv_channels: int | None = None
-    fp16_lm_cross_entropy: bool = False
-    apply_rope_fusion: bool = True
-    parallel_output: bool = True
-    bias_dropout_fusion: bool = True
-    bias_activation_fusion: bool = True
-    masked_softmax_fusion: bool = True
-    persist_layer_norm: bool = True
-    get_attention_mask_from_fusion: bool = True
-    share_embeddings_and_output_weights: bool = False  # try True
+    transformer_config: TransformerConfig = field(
+        default_factory=lambda: TransformerConfig(
+            apply_rope_fusion=True,
+            bias_dropout_fusion=True,
+            bias_activation_fusion=True,
+            masked_softmax_fusion=True,
+            persist_layer_norm=True,
+            hidden_size=512,
+            num_attention_heads=8,
+            num_layers=6,
+            init_method_std=0.02,
+        )
+    )
+
     make_vocab_size_divisible_by: int = 128
-    position_embedding_type: PositionEmbeddingKinds = "learned_absolute"
-    rotary_base: int = 10000
-    rotary_percent: float = 1.0
-    seq_len_interpolation_factor: Optional[float] = None
-    seq_length: int = 1024
-    hidden_size: int = 512
-    num_attention_heads: int = 8
-    num_layers: int = 6
-    init_method_std: float = 0.02
+
     biobert_spec_option: BiobertSpecOption = BiobertSpecOption.bert_layer_with_transformer_engine_spec
 
     optimizer_fn: Optional[Callable[["MegatronBioBertModel"], Optimizer]] = None
@@ -536,10 +531,12 @@ class BioBertConfig(
 
     def __post_init__(self) -> None:
         """Initialize derived config fields."""
-        super().__post_init__()
+        # Don't raise an AttributeError if the parent doesn't define a __post_init__
+        getattr(super(), "__post_init__", lambda: None)()
+
         self.transformer_layer_spec = get_biobert_spec(
             self.biobert_spec_option,
-            qk_layernorm=self.qk_layernorm,
+            qk_layernorm=self.transformer_config.qk_layernorm,
             core_attention=self.core_attention_override,
         )
 
@@ -550,7 +547,7 @@ class BioBertConfig(
         if vp_size:
             p_size = self.pipeline_model_parallel_size
             assert (
-                self.num_layers // p_size
+                self.transformer_config.num_layers // p_size
             ) % vp_size == 0, "Make sure the number of model chunks is the same across all pipeline stages."
 
         # The local specs all require the standard full attention mask.
