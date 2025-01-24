@@ -129,26 +129,9 @@ PositionEmbeddingKinds = Literal["learned_absolute", "rope"]
 
 # TODO make this a base class without the language head and pooler
 class MegatronBioBertModel(LanguageModule):
-    """Transformer language model.
+    """Transformer language model."""
 
-    Args:
-        config: transformer config
-        num_tokentypes: Set to 2 when args.bert_binary_head is True, and 0 otherwise. Defaults to 0.
-        transformer_layer_spec: Specifies module to use for transformer layers
-        vocab_size: vocabulary size
-        max_sequence_length: maximum size of sequence. This is used for positional embedding
-        pre_process: Include embedding layer (used with pipeline parallelism)
-        post_process: Include an output layer (used with pipeline parallelism)
-        parallel_output: Do not gather the outputs, keep them split across tensor parallel ranks
-        share_embeddings_and_output_weights: When True, input embeddings and output logit weights are shared.
-            Defaults to False.
-        position_embedding_type: Position embedding type. Options ["learned_absolute", "rope"].
-            Defaults is 'learned_absolute'.
-        rotary_percent: Percent of rotary dimension to use for rotary position embeddings.
-            Defaults to 1.0 (100%). Ignored unless position_embedding_type is 'rope'.
-    """
-
-    def __init__(  # noqa: D107
+    def __init__(
         self,
         config: TransformerConfig,
         num_tokentypes: int,
@@ -172,16 +155,42 @@ class MegatronBioBertModel(LanguageModule):
         include_input_ids: bool = False,
         skip_logits: bool = False,  # Useful for inference time.
     ):
+        """Initialize the MegatronBioBertModel.
+
+        Args:
+            config (TransformerConfig): transformer config
+            num_tokentypes (int): Set to 2 when args.bert_binary_head is True, and 0 otherwise. Defaults to 0.
+            transformer_layer_spec (ModuleSpec): Specifies module to use for transformer layers
+            vocab_size (int): vocabulary size
+            max_sequence_length (int): maximum size of sequence. This is used for positional embedding
+            tokenizer (AutoTokenizer): optional tokenizer object (currently only used in the constructor of ESM2Model)
+            pre_process (bool): Include embedding layer (used with pipeline parallelism)
+            post_process (bool): Include an output layer (used with pipeline parallelism)
+            fp16_lm_cross_entropy: Whether to move the cross entropy unreduced loss calculation for lm head to fp16.
+            parallel_output (bool): Do not gather the outputs, keep them split across tensor parallel ranks
+            share_embeddings_and_output_weights (bool): When True, input embeddings and output logit weights are shared. Defaults to False.
+            position_embedding_type (string): Position embedding type. Options ['learned_absolute', 'rope'].
+                Defaults is 'learned_absolute'.
+            rotary_percent (float): Percent of rotary dimension to use for rotary position embeddings.
+                Defaults to 1.0 (100%). Ignored unless position_embedding_type is 'rope'.
+            seq_len_interpolation_factor (Optional[float]): Interpolation factor for sequence length. Defaults to None.
+            add_binary_head (bool): Whether to add a binary head. Defaults to True.
+            return_embeddings (bool): Whether to return embeddings. Defaults to False.
+            include_embeddings (bool): Whether to include embeddings in the output dictionary. Defaults to False.
+            include_input_ids (bool): Whether to include input_ids in the output dictionary. Defaults to False.
+            use_full_attention_mask (bool): Whether to use full attention mask. Defaults to False.
+            include_hiddens (bool): Whether to include hidden states in the output dictionary. Defaults to False.
+            skip_logits (bool): Skip writing the token logits in output dict
+        """
         # TODO (@jstjohn) come up with a cleaner way for this model to return a set of things the user wants.
         #  hidden states, embeddings, logits, etc. The defaults should work for training but we need to make it
         #  customizable and easy to tell how to make it work well for inference as well as trouble shooting.
         #  Also make sure that everything returned that the user wants gets transposed to the b,s,h format.
         super(MegatronBioBertModel, self).__init__(config=config)
-        self.post_process = post_process
         self.add_binary_head = add_binary_head
         self.skip_logits = skip_logits
         if return_embeddings:
-            assert self.post_process, "only return embeddings on the last pipeline stage"
+            assert post_process, "only return embeddings on the last pipeline stage"
         # `b` = batch, `s` = sequence.
         # The old flash attention mechanism apparently wants you to use a b x 1 x s x s attention mask while
         #  the new one wants a b x 1 x 1 x s attention mask. This is a hack to allow us to switch between the two.
