@@ -133,11 +133,8 @@ class MegatronBioBertModel(LanguageModule):
 
     def __init__(
         self,
-        config: TransformerConfig,
+        config: "BioBertConfig",
         num_tokentypes: int,
-        transformer_layer_spec: ModuleSpec,
-        vocab_size: int,
-        max_sequence_length: int,
         tokenizer: Optional[AutoTokenizer] = None,
         pre_process: bool = True,
         post_process: bool = True,
@@ -160,9 +157,6 @@ class MegatronBioBertModel(LanguageModule):
         Args:
             config (TransformerConfig): transformer config
             num_tokentypes (int): Set to 2 when args.bert_binary_head is True, and 0 otherwise. Defaults to 0.
-            transformer_layer_spec (ModuleSpec): Specifies module to use for transformer layers
-            vocab_size (int): vocabulary size
-            max_sequence_length (int): maximum size of sequence. This is used for positional embedding
             tokenizer (AutoTokenizer): optional tokenizer object (currently only used in the constructor of ESM2Model)
             pre_process (bool): Include embedding layer (used with pipeline parallelism)
             post_process (bool): Include an output layer (used with pipeline parallelism)
@@ -196,9 +190,6 @@ class MegatronBioBertModel(LanguageModule):
         #  the new one wants a b x 1 x 1 x s attention mask. This is a hack to allow us to switch between the two.
         self.use_full_attention_mask = use_full_attention_mask
         self.config: TransformerConfig = config
-        self.transformer_layer_spec: ModuleSpec = transformer_layer_spec
-        self.vocab_size = vocab_size
-        self.max_sequence_length = max_sequence_length
         self.tokenizer = tokenizer
         self.pre_process = pre_process
         self.post_process = post_process
@@ -219,13 +210,13 @@ class MegatronBioBertModel(LanguageModule):
         if self.pre_process:
             self.register_buffer(
                 "bert_position_id_tensor",
-                torch.arange(max_sequence_length, dtype=torch.long, requires_grad=False).unsqueeze(0),
+                torch.arange(self.config.seq_length, dtype=torch.long, requires_grad=False).unsqueeze(0),
                 persistent=False,
             )
             self.embedding = LanguageModelEmbedding(
                 config=self.config,
-                vocab_size=self.vocab_size,
-                max_sequence_length=self.max_sequence_length,
+                vocab_size=self.config.vocab_size,
+                max_sequence_length=self.config.seq_length,
                 position_embedding_type=position_embedding_type,
                 num_tokentypes=num_tokentypes,
             )
@@ -242,7 +233,7 @@ class MegatronBioBertModel(LanguageModule):
         # Transformer.
         self.encoder = TransformerBlock(
             config=self.config,
-            spec=self.transformer_layer_spec,
+            spec=self.config.transformer_layer_spec,
             pre_process=self.pre_process,
             post_process=self.post_process,  # NOTE: in bionemo1 this is hard-coded to True
         )
@@ -272,7 +263,7 @@ class MegatronBioBertModel(LanguageModule):
 
             self.output_layer = tensor_parallel.ColumnParallelLinear(
                 config.hidden_size,
-                self.vocab_size,
+                self.config.vocab_size,
                 config=config,
                 init_method=config.init_method,
                 is_expert=False,
@@ -333,7 +324,7 @@ class MegatronBioBertModel(LanguageModule):
     def bert_position_ids(self, token_ids):  # noqa: D102
         # Create position ids
         seq_length = token_ids.size(1)
-        if seq_length != self.max_sequence_length:
+        if seq_length != self.config.seq_length:
             return self.bert_position_id_tensor[:, :seq_length]
         return self.bert_position_id_tensor  # No need to subset so skip the slice op
 
@@ -540,7 +531,21 @@ class BioBertConfig(
     # loss reduction class
     loss_reduction_class: Type[MegatronLossType] = BERTMLMLossWithReduction
 
+    transformer_layer_spec: ModuleSpec = field(init=False)
+    vocab_size: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        """Initialize derived config fields."""
+        super().__post_init__()
+        self.transformer_layer_spec = get_biobert_spec(
+            self.biobert_spec_option,
+            qk_layernorm=self.qk_layernorm,
+            core_attention=self.core_attention_override,
+        )
+
     def configure_model(self, tokenizer: AutoTokenizer) -> MegatronBioBertModelType:  # noqa: D102
+        self.vocab_size = get_vocab_size(self, tokenizer.vocab_size, self.make_vocab_size_divisible_by)
+
         vp_size = self.virtual_pipeline_model_parallel_size
         if vp_size:
             p_size = self.pipeline_model_parallel_size
@@ -561,14 +566,7 @@ class BioBertConfig(
 
         model = self.model_cls(
             self,
-            transformer_layer_spec=get_biobert_spec(
-                self.biobert_spec_option,
-                qk_layernorm=self.qk_layernorm,
-                core_attention=self.core_attention_override,
-            ),
             num_tokentypes=2 if do_next_sentence else 0,
-            vocab_size=get_vocab_size(self, tokenizer.vocab_size, self.make_vocab_size_divisible_by),
-            max_sequence_length=self.seq_length,
             tokenizer=tokenizer,
             fp16_lm_cross_entropy=self.fp16_lm_cross_entropy,
             parallel_output=self.parallel_output,
