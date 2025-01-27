@@ -138,8 +138,6 @@ class MegatronBioBertModel(LanguageModule):
         tokenizer: Optional[AutoTokenizer] = None,
         pre_process: bool = True,
         post_process: bool = True,
-        fp16_lm_cross_entropy: bool = False,
-        parallel_output: bool = True,
         share_embeddings_and_output_weights: bool = False,
         position_embedding_type: PositionEmbeddingKinds = "learned_absolute",
         rotary_percent: float = 1.0,
@@ -160,8 +158,6 @@ class MegatronBioBertModel(LanguageModule):
             tokenizer (AutoTokenizer): optional tokenizer object (currently only used in the constructor of ESM2Model)
             pre_process (bool): Include embedding layer (used with pipeline parallelism)
             post_process (bool): Include an output layer (used with pipeline parallelism)
-            fp16_lm_cross_entropy: Whether to move the cross entropy unreduced loss calculation for lm head to fp16.
-            parallel_output (bool): Do not gather the outputs, keep them split across tensor parallel ranks
             share_embeddings_and_output_weights (bool): When True, input embeddings and output logit weights are shared. Defaults to False.
             position_embedding_type (string): Position embedding type. Options ['learned_absolute', 'rope'].
                 Defaults is 'learned_absolute'.
@@ -189,12 +185,10 @@ class MegatronBioBertModel(LanguageModule):
         # The old flash attention mechanism apparently wants you to use a b x 1 x s x s attention mask while
         #  the new one wants a b x 1 x 1 x s attention mask. This is a hack to allow us to switch between the two.
         self.use_full_attention_mask = use_full_attention_mask
-        self.config: TransformerConfig = config
+        self.config: "BioBertConfig" = config
         self.tokenizer = tokenizer
         self.pre_process = pre_process
         self.post_process = post_process
-        self.fp16_lm_cross_entropy = fp16_lm_cross_entropy
-        self.parallel_output = parallel_output
         self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
         self.position_embedding_type = position_embedding_type
         self.add_binary_head = add_binary_head
@@ -214,7 +208,7 @@ class MegatronBioBertModel(LanguageModule):
                 persistent=False,
             )
             self.embedding = LanguageModelEmbedding(
-                config=self.config,
+                config=config.transformer_config,
                 vocab_size=self.config.vocab_size,
                 max_sequence_length=self.config.seq_length,
                 position_embedding_type=position_embedding_type,
@@ -223,9 +217,9 @@ class MegatronBioBertModel(LanguageModule):
 
         if self.position_embedding_type == "rope":
             self.rotary_pos_emb = RotaryEmbedding(
-                kv_channels=self.config.kv_channels,
+                kv_channels=config.transformer_config.kv_channels,
                 rotary_percent=rotary_percent,
-                rotary_interleaved=self.config.rotary_interleaved,
+                rotary_interleaved=config.transformer_config.rotary_interleaved,
                 # bug in megatron: they list the type as `float` but they default to `None` so it should be `Optional[float]`
                 seq_len_interpolation_factor=seq_len_interpolation_factor,  # type: ignore
             )
@@ -269,7 +263,7 @@ class MegatronBioBertModel(LanguageModule):
                 is_expert=False,
                 bias=True,
                 skip_bias_add=False,
-                gather_output=not self.parallel_output,
+                gather_output=not self.config.parallel_output,
                 skip_weight_param_allocation=pre_process and share_embeddings_and_output_weights,
                 embedding_activation_buffer=self.embedding_activation_buffer,
                 grad_output_buffer=self.grad_output_buffer,
@@ -496,8 +490,14 @@ class BioBertConfig(
             init_method_std=0.02,
         )
     )
+    parallel_output: bool = True
 
     make_vocab_size_divisible_by: int = 128
+    position_embedding_type: PositionEmbeddingKinds = "learned_absolute"
+    rotary_base: int = 10_000
+    rotary_percent: float = 1.0
+    seq_len_interpolation_factor: Optional[float] = None
+    seq_length: int = 1024
 
     biobert_spec_option: BiobertSpecOption = BiobertSpecOption.bert_layer_with_transformer_engine_spec
 
@@ -562,8 +562,6 @@ class BioBertConfig(
             self,
             num_tokentypes=2 if do_next_sentence else 0,
             tokenizer=tokenizer,
-            fp16_lm_cross_entropy=self.fp16_lm_cross_entropy,
-            parallel_output=self.parallel_output,
             share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,
             position_embedding_type=self.position_embedding_type,
             rotary_percent=self.rotary_percent,
