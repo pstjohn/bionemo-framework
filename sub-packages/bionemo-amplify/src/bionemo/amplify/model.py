@@ -143,11 +143,9 @@ class AMPLIFYModel(MegatronBioBertModel):
         self.skip_logits = skip_logits
 
         if config.activation_func is silu:
-            print(f"Pre-scaling: {config.ffn_hidden_size = }")
             multiple_of = 8
             intermediate_size = int(2 * config.ffn_hidden_size / 3)
             config.ffn_hidden_size = multiple_of * ((intermediate_size + multiple_of - 1) // multiple_of)
-            print(f"Post-scaling: {config.ffn_hidden_size = }")
 
         # megatron core pipelining currently depends on model type
         self.model_type = ModelType.encoder_or_decoder
