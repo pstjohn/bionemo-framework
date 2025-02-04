@@ -179,4 +179,6 @@ def assert_cosine_similarity(
     """
     similarity = torch.nn.functional.cosine_similarity(tensor1, tensor2, dim=2)
     similarity = similarity[mask == 1]
-    torch.testing.assert_close(similarity, torch.ones_like(similarity), rtol=rtol, atol=atol, msg=msg)
+    torch.testing.assert_close(
+        similarity, torch.ones_like(similarity), rtol=rtol, atol=atol, msg=lambda x: f"{msg}: {x}"
+    )

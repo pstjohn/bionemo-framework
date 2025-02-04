@@ -78,7 +78,7 @@ class AMPLIFYModel(MegatronBioBertModel):
         fp16_lm_cross_entropy: bool = False,
         parallel_output: bool = True,
         share_embeddings_and_output_weights: bool = False,
-        position_embedding_type: Literal["learned_absolute", "rope"] = "learned_absolute",
+        position_embedding_type: Literal["learned_absolute", "rope"] = "rope",
         rotary_percent: float = 1.0,
         seq_len_interpolation_factor: Optional[float] = None,
         add_binary_head: bool = True,
@@ -297,7 +297,7 @@ class AMPLIFYConfig(BioBertConfig[AMPLIFYModelT, MegatronLossType], iom.IOMixinW
     init_method_std: float = 0.02
 
     # embedding
-    token_dropout: bool = True
+    token_dropout: bool = False
     use_attention_mask: bool = True
 
     # core attention
@@ -311,7 +311,7 @@ class AMPLIFYConfig(BioBertConfig[AMPLIFYModelT, MegatronLossType], iom.IOMixinW
     share_embeddings_and_output_weights: bool = False
     make_vocab_size_divisible_by: int = 1
     position_embedding_type: PositionEmbeddingKinds = "rope"
-    rotary_base: int = 10000
+    rotary_base: int = 10_000
     rotary_percent: float = 1.0
 
     # AMPLIFY specific configuration

@@ -14,7 +14,6 @@
 # limitations under the License.
 
 
-import gc
 from pathlib import Path
 
 import torch
@@ -41,12 +40,12 @@ def assert_amplify_equivalence(
     tokenizer = BioNeMoAMPLIFYTokenizer()
 
     input_ids, attention_mask = get_input_tensors(tokenizer)
-    hf_logits, hf_hidden_state, hf_attn_inputs, hf_attn_outputs = load_and_evaluate_hf_amplify(
+    hf_model, hf_logits, hf_hidden_state, hf_attn_inputs, hf_attn_outputs = load_and_evaluate_hf_amplify(
         model_tag, precision, input_ids, attention_mask
     )
-    gc.collect()
-    torch.cuda.empty_cache()
-    nemo_logits, nemo_hidden_state, nemo_attn_inputs, nemo_attn_outputs = load_and_evaluate_nemo_amplify(
+    # gc.collect()
+    # torch.cuda.empty_cache()
+    nemo_model, nemo_logits, nemo_hidden_state, nemo_attn_inputs, nemo_attn_outputs = load_and_evaluate_nemo_amplify(
         tokenizer,
         ckpt_path,
         precision,
@@ -59,7 +58,7 @@ def assert_amplify_equivalence(
     # We don't care about the padding tokens, so we only compare the non-padding tokens.
     assert_cosine_similarity(nemo_attn_inputs[0].transpose(0, 1), hf_attn_inputs[0], attention_mask, msg="Attn inputs")
     assert_cosine_similarity(
-        nemo_attn_outputs[0].transpose(0, 1), hf_attn_outputs[0], attention_mask, msg="Attn inputs"
+        nemo_attn_outputs[0].transpose(0, 1), hf_attn_outputs[0], attention_mask, msg="Attn outputs"
     )
 
     assert_cosine_similarity(nemo_hidden_state, hf_hidden_state, attention_mask, rtol, atol)
@@ -93,13 +92,12 @@ def load_and_evaluate_hf_amplify(
     hook_fn.inputs = None
     hook_fn.outputs = None
 
-    hf_model.transformer_encoder[0].register_forward_hook(hook_fn)
-    # hf_model.transformer_encoder[0].ffn.register_forward_hook(hook_fn)
+    hf_model.transformer_encoder[0].ffn.register_forward_hook(hook_fn)
 
     hf_model = hf_model.to("cuda").eval()
     hf_output_all = hf_model(input_ids, attention_mask.float(), output_hidden_states=True)
     hf_hidden_state = hf_output_all.hidden_states[-1]
-    return hf_output_all.logits, hf_hidden_state, hook_fn.inputs, hook_fn.outputs
+    return hf_model, hf_output_all.logits, hf_hidden_state, hook_fn.inputs, hook_fn.outputs
 
 
 def load_and_evaluate_nemo_amplify(
@@ -148,13 +146,13 @@ def load_and_evaluate_nemo_amplify(
     hook_fn.inputs = None
     hook_fn.outputs = None
 
-    nemo_model.encoder.layers[0].self_attention.register_forward_hook(hook_fn)
+    nemo_model.encoder.layers[0].self_attention.linear_proj.register_forward_hook(hook_fn)
     # nemo_model.encoder.layers[0].mlp.register_forward_hook(hook_fn)
 
     nemo_output = nemo_model(input_ids, attention_mask)
     nemo_logits = nemo_output["token_logits"].transpose(0, 1).contiguous()[..., : tokenizer.vocab_size]
     nemo_hidden_state = nemo_output["hidden_states"]
-    return nemo_logits, nemo_hidden_state, hook_fn.inputs, hook_fn.outputs
+    return nemo_model, nemo_logits, nemo_hidden_state, hook_fn.inputs, hook_fn.outputs
 
 
 def test_convert_amplify_120M_smoke(tmp_path):
