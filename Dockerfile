@@ -178,3 +178,25 @@ RUN <<EOF
   rm -rf /usr/local/lib/python3.12/dist-packages/bionemo*
   pip uninstall -y nemo_toolkit megatron_core
 EOF
+
+# The 'release' target needs to be last so that it's the default build target. In the future, we could consider a setup
+# similar to the devcontainer above, where we copy the dist-packages folder from the build image into the release image.
+# This would reduce the overall image size by reducing the number of intermediate layers. In the meantime, we match the
+# existing release image build by copying over remaining files from the repo into the container.
+FROM bionemo2-base AS release
+
+RUN mkdir -p /workspace/bionemo2/.cache/
+
+COPY VERSION .
+COPY ./scripts ./scripts
+COPY ./README.md ./
+# Copy over folders so that the image can run tests in a self-contained fashion.
+COPY ./ci/scripts ./ci/scripts
+COPY ./docs ./docs
+
+COPY --from=rust-env /usr/local/cargo /usr/local/cargo
+COPY --from=rust-env /usr/local/rustup /usr/local/rustup
+
+
+# RUN rm -rf /usr/local/cargo /usr/local/rustup
+RUN chmod 777 -R /workspace/bionemo2/
