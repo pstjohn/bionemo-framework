@@ -21,13 +21,16 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt,sharing=locked \
 set -eo pipefail
 apt-get update -qy
 apt-get install -qyy \
+  -o APT::Install-Recommends=false \
+  -o APT::Install-Suggests=false \
   libsndfile1 \
   ffmpeg \
   git \
   curl \
   pre-commit \
   sudo \
-  gnupg
+  gnupg \
+  gosu
 apt-get upgrade -qyy \
   rsync
 rm -rf /tmp/* /var/tmp/*
@@ -56,6 +59,9 @@ RUN echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
 # Addressing Security Scan Vulnerabilities
 RUN rm -rf /opt/pytorch/pytorch/third_party/onnx
 
+COPY --from=rust-env /usr/local/cargo /usr/local/cargo
+COPY --from=rust-env /usr/local/rustup /usr/local/rustup
+
 # Use UV to install python packages from the workspace. This just installs packages into the system's python
 # environment, and does not use the current uv.lock file. Note that with python 3.12, we now need to set
 # UV_BREAK_SYSTEM_PACKAGES, since the pytorch base image has made the decision not to use a virtual environment and UV
@@ -65,7 +71,9 @@ ENV UV_LINK_MODE=copy \
   UV_COMPILE_BYTECODE=1 \
   UV_PYTHON_DOWNLOADS=never \
   UV_SYSTEM_PYTHON=true \
-  UV_BREAK_SYSTEM_PACKAGES=1
+  UV_BREAK_SYSTEM_PACKAGES=1 \
+  PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:${PATH}" \
+  RUSTUP_HOME="/usr/local/rustup"
 
 # Install the bionemo-geometric requirements ahead of copying over the rest of the repo, so that we can cache their
 # installation. These involve building some torch extensions, so they can take a while to install.
@@ -73,11 +81,8 @@ RUN --mount=type=bind,source=./sub-packages/bionemo-geometric/requirements.txt,t
   --mount=type=cache,target=/root/.cache \
   uv pip install --no-build-isolation maturin -r /requirements-pyg.txt
 
-COPY --from=rust-env /usr/local/cargo /usr/local/cargo
-COPY --from=rust-env /usr/local/rustup /usr/local/rustup
-
-ENV PATH="/usr/local/cargo/bin:/usr/local/rustup/bin:${PATH}"
-ENV RUSTUP_HOME="/usr/local/rustup"
+COPY ci/docker/entrypoint.sh /usr/local/bin/
+ENTRYPOINT [ "entrypoint.sh" ]
 
 FROM dev AS release
 
@@ -100,6 +105,7 @@ COPY ./docs ./docs
 # Note, we need to mount the .git folder here so that setuptools-scm is able to fetch git tag for version.
 # Includes a hack to install tensorstore 0.1.45, which doesn't distribute a pypi wheel for python 3.12, and the metadata
 # in the source distribution doesn't match the expected pypi version.
+
 RUN --mount=type=bind,source=./.git,target=./.git \
   --mount=type=bind,source=./requirements-test.txt,target=/requirements-test.txt \
   --mount=type=bind,source=./requirements-cve.txt,target=/requirements-cve.txt \
@@ -116,3 +122,5 @@ rm -rf ./3rdparty
 rm -rf /tmp/*
 rm -rf ./sub-packages/bionemo-noodles/target
 EOF
+
+RUN chown -R ubuntu:ubuntu /workspace/bionemo2/*
