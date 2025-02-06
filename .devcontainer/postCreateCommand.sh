@@ -9,4 +9,4 @@ sudo env "PATH=$PATH" uv pip install --no-build-isolation --editable \
   -r requirements-test.txt \
   -r requirements-dev.txt
 
-rm -rf ./sub-packages/bionemo-noodles/target
+sudo rm -rf ./sub-packages/bionemo-noodles/target
