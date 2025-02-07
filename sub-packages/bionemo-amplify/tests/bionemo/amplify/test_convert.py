@@ -74,6 +74,18 @@ def assert_amplify_equivalence(
         atol=1e-4,
     )
 
+    for i, (hf_block_output, nemo_block_output) in enumerate(
+        zip(hf_results["encoder_block_outputs"], nemo_results["encoder_block_outputs"], strict=True)
+    ):
+        assert_cosine_similarity(
+            hf_block_output,
+            nemo_block_output,
+            attention_mask.cpu(),
+            rtol=1e-4,
+            atol=1e-4,
+            msg=f"Encoder block output {i}",
+        )
+
     # assert_cosine_similarity(nemo_attn_inputs[0].transpose(0, 1), hf_attn_inputs[0], attention_mask, msg="Attn inputs")
     # assert_cosine_similarity(
     #     nemo_attn_outputs[0].transpose(0, 1), hf_attn_outputs[0], attention_mask, msg="Attn outputs"

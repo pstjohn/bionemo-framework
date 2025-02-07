@@ -224,7 +224,7 @@ def get_biobert_spec(  # noqa: D417
 
         case BiobertSpecOption.amplify_with_transformer_engine_spec:
             if core_attention is None:
-                core_attention = TEDotProductAttention
+                core_attention = DotProductAttention
 
             esm2_bert_layer_local_spec = spec_utils.ModuleSpec(
                 module=TransformerLayer,
