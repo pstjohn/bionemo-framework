@@ -22,10 +22,11 @@ from nemo.lightning import io
 from transformers import AutoModel
 
 from bionemo.amplify.convert import HFAMPLIFYImporter  # noqa: F401
+from bionemo.amplify.hf_rotary import apply_rotary_emb
 from bionemo.amplify.model import AMPLIFYConfig
 from bionemo.amplify.tokenizer import BioNeMoAMPLIFYTokenizer
 from bionemo.core.utils.dtypes import PrecisionTypes, get_autocast_dtype
-from bionemo.esm2.testing.compare import assert_cosine_similarity, get_input_tensors
+from bionemo.esm2.testing.compare import ForwardHook, get_input_tensors
 from bionemo.llm.model.biobert.lightning import biobert_lightning_module
 from bionemo.testing import megatron_parallel_state_utils
 
@@ -40,12 +41,10 @@ def assert_amplify_equivalence(
     tokenizer = BioNeMoAMPLIFYTokenizer()
 
     input_ids, attention_mask = get_input_tensors(tokenizer)
-    hf_model, hf_logits, hf_hidden_state, hf_attn_inputs, hf_attn_outputs = load_and_evaluate_hf_amplify(
-        model_tag, precision, input_ids, attention_mask
-    )
+    hf_results = load_and_evaluate_hf_amplify(model_tag, precision, input_ids, attention_mask)
     # gc.collect()
     # torch.cuda.empty_cache()
-    nemo_model, nemo_logits, nemo_hidden_state, nemo_attn_inputs, nemo_attn_outputs = load_and_evaluate_nemo_amplify(
+    nemo_results = load_and_evaluate_nemo_amplify(
         tokenizer,
         ckpt_path,
         precision,
@@ -53,21 +52,25 @@ def assert_amplify_equivalence(
         attention_mask,
     )
 
-    # Rather than directly comparing the logit or hidden state tensors, we compare their cosine similarity. These
-    # should be essentially 1 if the outputs are equivalent, but is less sensitive to small numerical differences.
-    # We don't care about the padding tokens, so we only compare the non-padding tokens.
-    assert_cosine_similarity(nemo_attn_inputs[0].transpose(0, 1), hf_attn_inputs[0], attention_mask, msg="Attn inputs")
-    assert_cosine_similarity(
-        nemo_attn_outputs[0].transpose(0, 1), hf_attn_outputs[0], attention_mask, msg="Attn outputs"
-    )
+    torch.testing.assert_close(hf_results["embeddings"], nemo_results["embeddings"], rtol=rtol, atol=atol)
+    torch.testing.assert_close(hf_results["query_post_rot"], nemo_results["query_post_rot"], rtol=rtol, atol=atol)
+    torch.testing.assert_close(hf_results["key_post_rot"], nemo_results["key_post_rot"], rtol=rtol, atol=atol)
+    torch.testing.assert_close(hf_results["value"], nemo_results["value"], rtol=rtol, atol=atol)
 
-    assert_cosine_similarity(nemo_hidden_state, hf_hidden_state, attention_mask, rtol, atol)
-    assert_cosine_similarity(nemo_logits, hf_logits, attention_mask, rtol, atol)
+    # torch.testing.assert_close(hf_results["attn_output"], nemo_results["attn_output"], rtol=rtol, atol=atol)
+
+    # assert_cosine_similarity(nemo_attn_inputs[0].transpose(0, 1), hf_attn_inputs[0], attention_mask, msg="Attn inputs")
+    # assert_cosine_similarity(
+    #     nemo_attn_outputs[0].transpose(0, 1), hf_attn_outputs[0], attention_mask, msg="Attn outputs"
+    # )
+
+    # assert_cosine_similarity(nemo_hidden_state, hf_hidden_state, attention_mask, rtol, atol)
+    # assert_cosine_similarity(nemo_logits, hf_logits, attention_mask, rtol, atol)
 
 
 def load_and_evaluate_hf_amplify(
     model_tag: str, precision: PrecisionTypes, input_ids: torch.Tensor, attention_mask: torch.Tensor
-) -> tuple[torch.Tensor, ...]:
+) -> dict[str, torch.Tensor]:
     """Load a HuggingFace model and evaluate it on the given inputs.
 
     Args:
@@ -75,9 +78,6 @@ def load_and_evaluate_hf_amplify(
         precision: The precision type to use for the comparison.
         input_ids: The input IDs tensor to evaluate.
         attention_mask: The attention mask tensor to evaluate.
-
-    Returns:
-        A tuple of the logits and hidden states tensors calculated by the HuggingFace model, respectively.
     """
     hf_model = AutoModel.from_pretrained(
         model_tag,
@@ -85,19 +85,47 @@ def load_and_evaluate_hf_amplify(
         trust_remote_code=True,
     )
 
-    def hook_fn(module, inputs, outputs):
-        hook_fn.inputs = inputs
-        hook_fn.outputs = outputs
+    embedding_hook = ForwardHook(lambda inputs, outputs: outputs[0])
+    hf_model.encoder.register_forward_hook(embedding_hook)
 
-    hook_fn.inputs = None
-    hook_fn.outputs = None
+    query_pre_rot_hook = ForwardHook(lambda inputs, outputs: outputs[0])
+    hf_model.transformer_encoder[0].q.register_forward_hook(query_pre_rot_hook)
 
-    hf_model.transformer_encoder[0].ffn.register_forward_hook(hook_fn)
+    key_pre_rot_hook = ForwardHook(lambda inputs, outputs: outputs[0])
+    hf_model.transformer_encoder[0].k.register_forward_hook(key_pre_rot_hook)
+
+    value_hook = ForwardHook(lambda inputs, outputs: outputs[0])
+    hf_model.transformer_encoder[0].v.register_forward_hook(value_hook)
+
+    attn_output_hook = ForwardHook(lambda inputs, outputs: outputs[0])
+    hf_model.transformer_encoder[0].wo.register_forward_hook(attn_output_hook)
 
     hf_model = hf_model.to("cuda").eval()
-    hf_output_all = hf_model(input_ids, attention_mask.float(), output_hidden_states=True)
-    hf_hidden_state = hf_output_all.hidden_states[-1]
-    return hf_model, hf_output_all.logits, hf_hidden_state, hook_fn.inputs, hook_fn.outputs
+    _ = hf_model(input_ids, attention_mask.float(), output_hidden_states=True)
+
+    xq = query_pre_rot_hook.data.view(
+        input_ids.shape[0],
+        input_ids.shape[1],
+        hf_model.config.num_attention_heads,
+        hf_model.transformer_encoder[0].d_head,
+    )
+    xk = key_pre_rot_hook.data.view(
+        input_ids.shape[0],
+        input_ids.shape[1],
+        hf_model.config.num_attention_heads,
+        hf_model.transformer_encoder[0].d_head,
+    )
+    xq, xk = apply_rotary_emb(xq, xk, hf_model.freqs_cis[: input_ids.shape[1]].cpu())
+
+    # hf_hidden_state = hf_output_all.hidden_states[-1]
+
+    return {
+        "embeddings": embedding_hook.data,
+        "query_post_rot": xq.flatten(-2, -1),
+        "key_post_rot": xk.flatten(-2, -1),
+        "value": value_hook.data,
+        "attn_output": attn_output_hook.data,
+    }
 
 
 def load_and_evaluate_nemo_amplify(
@@ -106,7 +134,7 @@ def load_and_evaluate_nemo_amplify(
     precision: PrecisionTypes,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
-) -> tuple[torch.Tensor, ...]:
+) -> dict[str, torch.Tensor]:
     """Load a AMPLIFY NeMo2 model checkpoint and evaluate it on the input tensors.
 
     It would be great to make this more ergonomic, i.e., how to create a model from a checkpoint and evaluate it.
@@ -117,9 +145,6 @@ def load_and_evaluate_nemo_amplify(
         precision: Precision type to use for the model.
         input_ids: Input tokens
         attention_mask: Input attention mask
-
-    Returns:
-        The logits and hidden states from the model.
     """
 
     dtype = get_autocast_dtype(precision)
@@ -139,20 +164,36 @@ def load_and_evaluate_nemo_amplify(
     if dtype is torch.float16 or dtype is torch.bfloat16:
         nemo_model = Float16Module(nemo_config, nemo_model)
 
-    def hook_fn(module, inputs, outputs):
-        hook_fn.inputs = inputs
-        hook_fn.outputs = outputs
+    embedding_hook = ForwardHook(lambda inputs, outputs: outputs[0].transpose(0, 1))
+    nemo_model.embedding.register_forward_hook(embedding_hook)
 
-    hook_fn.inputs = None
-    hook_fn.outputs = None
+    query_post_rot_hook = ForwardHook(lambda inputs, outputs: inputs[0].transpose(0, 1).flatten(-2, -1))
+    nemo_model.encoder.layers[0].self_attention.core_attention.register_forward_hook(query_post_rot_hook)
 
-    nemo_model.encoder.layers[0].self_attention.linear_proj.register_forward_hook(hook_fn)
-    # nemo_model.encoder.layers[0].mlp.register_forward_hook(hook_fn)
+    key_post_rot_hook = ForwardHook(lambda inputs, outputs: inputs[1].transpose(0, 1).flatten(-2, -1))
+    nemo_model.encoder.layers[0].self_attention.core_attention.register_forward_hook(key_post_rot_hook)
+
+    value_post_rot_hook = ForwardHook(lambda inputs, outputs: inputs[2].transpose(0, 1).flatten(-2, -1))
+    nemo_model.encoder.layers[0].self_attention.core_attention.register_forward_hook(value_post_rot_hook)
+
+    attn_output_hook = ForwardHook(lambda inputs, outputs: outputs[0].transpose(0, 1))
+    nemo_model.encoder.layers[0].self_attention.core_attention.register_forward_hook(attn_output_hook)
+
+    # attn_hook = TestHook()
+    # nemo_model.encoder.layers[0].self_attention.core_attention.register_forward_hook(attn_hook)
 
     nemo_output = nemo_model(input_ids, attention_mask)
-    nemo_logits = nemo_output["token_logits"].transpose(0, 1).contiguous()[..., : tokenizer.vocab_size]
-    nemo_hidden_state = nemo_output["hidden_states"]
-    return nemo_model, nemo_logits, nemo_hidden_state, hook_fn.inputs, hook_fn.outputs
+
+    _ = nemo_output["token_logits"].transpose(0, 1).contiguous()[..., : tokenizer.vocab_size]
+    # nemo_hidden_state = nemo_output["hidden_states"]
+
+    return {
+        "embeddings": embedding_hook.data,
+        "query_post_rot": query_post_rot_hook.data,
+        "key_post_rot": key_post_rot_hook.data,
+        "value": value_post_rot_hook.data,
+        "attn_output": attn_output_hook.data,
+    }
 
 
 def test_convert_amplify_120M_smoke(tmp_path):

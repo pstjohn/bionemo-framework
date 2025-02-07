@@ -35,7 +35,7 @@ def test_rope_embeddings():
     q_post, k_post = apply_rotary_emb(q, k, freqs_cis)
 
     # NeMo Rope
-    nemo_config = AMPLIFYConfig(apply_rope_fusion=False)
+    nemo_config = AMPLIFYConfig(apply_rope_fusion=False, rotary_interleaved=True)
     rotary_pos_layer = RotaryEmbedding(
         kv_channels=nemo_config.kv_channels,
         rotary_percent=nemo_config.rotary_percent,
@@ -48,3 +48,42 @@ def test_rope_embeddings():
 
     torch.testing.assert_close(q_post, q_post_nemo.transpose(0, 1))
     torch.testing.assert_close(k_post, k_post_nemo.transpose(0, 1))
+
+
+# def test_multi_head_attention():
+#     rng = torch.Generator().manual_seed(42)
+#     q = torch.randn([2, 72, 10, 64], dtype=torch.float32, generator=rng)
+#     k = torch.randn([2, 72, 10, 64], dtype=torch.float32, generator=rng)
+#     v = torch.randn([2, 72, 10, 64], dtype=torch.float32, generator=rng)
+
+#     attention_mask = torch.ones([2, 72], dtype=torch.float32).bool()
+#     attention_mask[0, -7:] = False
+#     attention_mask[1, -5:] = False
+
+#     q_new = torch.randn([2, 72, 10, 64], dtype=torch.float32, generator=rng)
+#     k_new = torch.randn([2, 72, 10, 64], dtype=torch.float32, generator=rng)
+#     v_new = torch.randn([2, 72, 10, 64], dtype=torch.float32, generator=rng)
+
+#     q_new[attention_mask] = q[attention_mask]
+#     k_new[attention_mask] = k[attention_mask]
+#     v_new[attention_mask] = v[attention_mask]
+
+#     attention_mask_rep = attention_mask.unsqueeze(1).unsqueeze(1).repeat(1, 10, attention_mask.size(-1), 1)
+
+#     attn_output = torch.nn.functional.scaled_dot_product_attention(
+#         query=q.transpose(1, 2),
+#         key=k.transpose(1, 2),
+#         value=v.transpose(1, 2),
+#         attn_mask=attention_mask_rep,
+#         dropout_p=0,
+#     ).transpose(1, 2)
+
+#     attn_output_new = torch.nn.functional.scaled_dot_product_attention(
+#         query=q_new.transpose(1, 2),
+#         key=k_new.transpose(1, 2),
+#         value=v_new.transpose(1, 2),
+#         attn_mask=attention_mask_rep,
+#         dropout_p=0,
+#     ).transpose(1, 2)
+
+#     torch.testing.assert_close(attn_output[attention_mask], attn_output_new[attention_mask])

@@ -17,6 +17,7 @@
 import gc
 import math
 from pathlib import Path
+from typing import Callable
 
 import torch
 from megatron.core.transformer.module import Float16Module
@@ -167,7 +168,7 @@ def assert_cosine_similarity(
     atol: float | None = None,
     msg: str | None = None,
 ) -> None:
-    """Assert that the cosine similarity between two tensors is close to 1.
+    """Assert that both the cosine similarity between two tensors is close to 1, and the ratio of their magnitudes is 1.
 
     Args:
         tensor1: The first tensor to compare.
@@ -177,8 +178,76 @@ def assert_cosine_similarity(
         atol: The absolute tolerance to use for the comparison. Defaults to 1e-4.
         msg: An optional message to include in the assertion error.
     """
+    assert tensor1.size() == tensor2.size()
+
     similarity = torch.nn.functional.cosine_similarity(tensor1, tensor2, dim=2)
     similarity = similarity[mask == 1]
+
     torch.testing.assert_close(
-        similarity, torch.ones_like(similarity), rtol=rtol, atol=atol, msg=lambda x: f"{msg}: {x}"
+        similarity,
+        torch.ones_like(similarity),
+        rtol=rtol,
+        atol=atol,
+        msg=lambda x: f"{msg} (angle): {x}",
     )
+
+    magnitude_similarity = torch.norm(tensor1, dim=2) / torch.norm(tensor2, dim=2)
+    magnitude_similarity = magnitude_similarity[mask == 1]
+    torch.testing.assert_close(
+        magnitude_similarity,
+        torch.ones_like(magnitude_similarity),
+        rtol=1e-2,
+        atol=1e-2,
+        msg=lambda x: f"{msg} (magnitude): {x}",
+    )
+
+
+TransformFn = Callable[
+    [tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]],
+    torch.Tensor,
+]
+
+
+class ForwardHook:
+    """A forward hook to extract a desired intermediate tensor for later comparison."""
+
+    def __init__(self, transform_fn: TransformFn) -> None:
+        """A forward hook to extract a desired intermediate tensor for later comparison.
+
+        The resulting tensor is saved in the `data` attribute of the hook.
+
+        Args:
+            transform_fn: A function that maps the input and output tensors of the module to the desired tensor.
+        """
+        self._transform_fn = transform_fn
+        self._data: torch.Tensor | None = None
+
+    def __call__(self, module, module_in, module_out):
+        """The forward hook function."""
+        if not isinstance(module_out, tuple):
+            module_out = (module_out,)
+        if not isinstance(module_in, tuple):
+            module_in = (module_in,)
+
+        self._data = self._transform_fn(module_in, module_out).detach().cpu()
+
+    @property
+    def data(self) -> torch.Tensor:
+        """The extracted tensor from the forward hook."""
+        if self._data is None:
+            raise ValueError("No data has been saved in this hook.")
+        return self._data
+
+
+class TestHook:
+    """A test hook that just captures the raw inputs and outputs."""
+
+    def __init__(self) -> None:
+        """A test hook that just captures the raw inputs and outputs."""
+        self.inputs: tuple[torch.Tensor, ...] | None = None
+        self.outputs: tuple[torch.Tensor, ...] | None = None
+
+    def __call__(self, module, inputs, outputs):
+        """The forward hook function."""
+        self.inputs = inputs
+        self.outputs = outputs

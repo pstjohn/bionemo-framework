@@ -20,6 +20,7 @@ from typing import Any, Callable, Literal, Optional, Sequence, Type, TypeVar
 import torch
 from megatron.core import tensor_parallel
 from megatron.core.models.bert.pooler import Pooler
+from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.transformer import spec_utils
 from megatron.core.transformer.enums import ModelType
@@ -33,7 +34,6 @@ from torch.nn.functional import silu
 from torch.optim import Optimizer
 
 # from bionemo.amplify.data.tokenizer import BioNeMoAMPLIFYTokenizer
-from bionemo.esm2.model.embedding import ESM2Embedding
 from bionemo.llm.api import MegatronLossType
 from bionemo.llm.model.biobert.model import BioBertConfig, MegatronBioBertModel, PositionEmbeddingKinds
 from bionemo.llm.model.biobert.transformer_specs import BiobertSpecOption
@@ -160,16 +160,12 @@ class AMPLIFYModel(MegatronBioBertModel):
             # ESM2 Customization: ESM2Embedding instead of LanguageModelEmbedding
             # TODO: call super, overwrite the self.embedding, and setup_embeddings_and_output_layer in constructor.
             # Note: need to avoid calling setup twice: skip with super (super(skip_setup=True))
-            self.embedding = ESM2Embedding(
+            self.embedding = LanguageModelEmbedding(
                 config=self.config,
                 vocab_size=self.vocab_size,
                 max_sequence_length=self.max_sequence_length,
                 position_embedding_type=position_embedding_type,
                 num_tokentypes=num_tokentypes,
-                # ESM2 NEW ARGS
-                token_dropout=self.config.token_dropout,
-                use_attention_mask=self.config.use_attention_mask,
-                mask_token_id=tokenizer.mask_token_id,
             )
 
         if self.position_embedding_type == "rope":
@@ -219,25 +215,11 @@ class AMPLIFYModel(MegatronBioBertModel):
         self,
         input_ids: Tensor,
         position_ids: Tensor,
-        tokentype_ids: Tensor | None = None,
-        attention_mask: Tensor | None = None,
-    ):
-        """Forward pass of the embedding layer.
-
-        Args:
-            input_ids: The input tensor of shape (batch_size, sequence_length) containing the input IDs.
-            position_ids: The tensor of shape (batch_size, sequence_length) containing the position IDs.
-            tokentype_ids: The tensor of shape (batch_size, sequence_length) containing the token type IDs. Defaults to None.
-            attention_mask: The tensor of shape (batch_size, sequence_length) containing the attention mask. Defaults to None.
-
-        Returns:
-            Tensor: The output tensor of shape (batch_size, sequence_length, hidden_size) containing the embedded representations.
-        """
-        # ESM2 Customization: ESM2Embedding forward takes attention_mask
-        # in addition to the args required by LanguageModelEmbedding
-        return self.embedding(
-            input_ids=input_ids, position_ids=position_ids, tokentype_ids=tokentype_ids, attention_mask=attention_mask
-        )
+        tokentype_ids: Optional[Tensor] = None,
+        attention_mask: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Produce embeddings."""
+        return self.embedding(input_ids=input_ids, position_ids=position_ids, tokentype_ids=tokentype_ids)
 
 
 AMPLIFYModelT = TypeVar("AMPLIFYModelT", bound=AMPLIFYModel)
@@ -311,6 +293,7 @@ class AMPLIFYConfig(BioBertConfig[AMPLIFYModelT, MegatronLossType], iom.IOMixinW
     share_embeddings_and_output_weights: bool = False
     make_vocab_size_divisible_by: int = 1
     position_embedding_type: PositionEmbeddingKinds = "rope"
+    rotary_interleaved: bool = True
     rotary_base: int = 10_000
     rotary_percent: float = 1.0
 
@@ -319,12 +302,12 @@ class AMPLIFYConfig(BioBertConfig[AMPLIFYModelT, MegatronLossType], iom.IOMixinW
     bias_swiglu_fusion: bool = True
     bias_activation_fusion: bool = False
     bias_dropout_fusion: bool = False
-    apply_rope_fusion: bool = True
+    apply_rope_fusion: bool = False
     gated_linear_unit: bool = True
     activation_func: str = silu
     normalization: str = "RMSNorm"  # AMPLIFY uses RMSNorm instead of LayerNorm
     layernorm_zero_centered_gamma: bool = False  # Zero centered gamma not supported for RMSNorm
-    biobert_spec_option: BiobertSpecOption = BiobertSpecOption.esm2_bert_layer_with_transformer_engine_spec
+    biobert_spec_option: BiobertSpecOption = BiobertSpecOption.amplify_with_transformer_engine_spec
     apply_query_key_layer_scaling = False
 
     # TODO: Move this to better places?
