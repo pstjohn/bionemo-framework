@@ -26,7 +26,7 @@ from bionemo.amplify.hf_rotary import apply_rotary_emb
 from bionemo.amplify.model import AMPLIFYConfig
 from bionemo.amplify.tokenizer import BioNeMoAMPLIFYTokenizer
 from bionemo.core.utils.dtypes import PrecisionTypes, get_autocast_dtype
-from bionemo.esm2.testing.compare import ForwardHook, get_input_tensors
+from bionemo.esm2.testing.compare import ForwardHook, assert_cosine_similarity, get_input_tensors
 from bionemo.llm.model.biobert.lightning import biobert_lightning_module
 from bionemo.testing import megatron_parallel_state_utils
 
@@ -58,6 +58,21 @@ def assert_amplify_equivalence(
     torch.testing.assert_close(hf_results["value"], nemo_results["value"], rtol=rtol, atol=atol)
 
     # torch.testing.assert_close(hf_results["attn_output"], nemo_results["attn_output"], rtol=rtol, atol=atol)
+    assert_cosine_similarity(
+        hf_results["attn_output"],
+        nemo_results["attn_output"],
+        attention_mask.cpu(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+    assert_cosine_similarity(
+        hf_results["attn_linear_output"],
+        nemo_results["attn_linear_output"],
+        attention_mask.cpu(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
 
     # assert_cosine_similarity(nemo_attn_inputs[0].transpose(0, 1), hf_attn_inputs[0], attention_mask, msg="Attn inputs")
     # assert_cosine_similarity(
@@ -97,12 +112,24 @@ def load_and_evaluate_hf_amplify(
     value_hook = ForwardHook(lambda inputs, outputs: outputs[0])
     hf_model.transformer_encoder[0].v.register_forward_hook(value_hook)
 
-    attn_output_hook = ForwardHook(lambda inputs, outputs: outputs[0])
+    # The output of the attention layer is the same as the output of the linear layer, but the actual attention function
+    # isn't wrapped in a nn.Module.
+    attn_output_hook = ForwardHook(lambda inputs, outputs: inputs[0])
     hf_model.transformer_encoder[0].wo.register_forward_hook(attn_output_hook)
+
+    attn_linear_output_hook = ForwardHook(lambda inputs, outputs: outputs[0])
+    hf_model.transformer_encoder[0].wo.register_forward_hook(attn_linear_output_hook)
+
+    encoder_block_hooks = [
+        ForwardHook(lambda inputs, outputs: outputs[0]) for _ in range(len(hf_model.transformer_encoder))
+    ]
+    for i, hook in enumerate(encoder_block_hooks):
+        hf_model.transformer_encoder[i].register_forward_hook(hook)
 
     hf_model = hf_model.to("cuda").eval()
     _ = hf_model(input_ids, attention_mask.float(), output_hidden_states=True)
 
+    # These post-rotary embeddings are applied in the forward pass of the model, so we need to apply them here.
     xq = query_pre_rot_hook.data.view(
         input_ids.shape[0],
         input_ids.shape[1],
@@ -125,6 +152,8 @@ def load_and_evaluate_hf_amplify(
         "key_post_rot": xk.flatten(-2, -1),
         "value": value_hook.data,
         "attn_output": attn_output_hook.data,
+        "attn_linear_output": attn_linear_output_hook.data,
+        "encoder_block_outputs": [hook.data for hook in encoder_block_hooks],
     }
 
 
@@ -179,8 +208,17 @@ def load_and_evaluate_nemo_amplify(
     attn_output_hook = ForwardHook(lambda inputs, outputs: outputs[0].transpose(0, 1))
     nemo_model.encoder.layers[0].self_attention.core_attention.register_forward_hook(attn_output_hook)
 
+    attn_linear_output_hook = ForwardHook(lambda inputs, outputs: outputs[0].transpose(0, 1))
+    nemo_model.encoder.layers[0].self_attention.linear_proj.register_forward_hook(attn_linear_output_hook)
+
+    encoder_block_hooks = [
+        ForwardHook(lambda inputs, outputs: outputs[0].transpose(0, 1)) for _ in range(len(nemo_model.encoder.layers))
+    ]
+    for i, hook in enumerate(encoder_block_hooks):
+        nemo_model.encoder.layers[i].register_forward_hook(hook)
+
     # attn_hook = TestHook()
-    # nemo_model.encoder.layers[0].self_attention.core_attention.register_forward_hook(attn_hook)
+    # nemo_model.encoder.layers[0].register_forward_hook(attn_hook)
 
     nemo_output = nemo_model(input_ids, attention_mask)
 
@@ -193,6 +231,8 @@ def load_and_evaluate_nemo_amplify(
         "key_post_rot": key_post_rot_hook.data,
         "value": value_post_rot_hook.data,
         "attn_output": attn_output_hook.data,
+        "attn_linear_output": attn_linear_output_hook.data,
+        "encoder_block_outputs": [hook.data for hook in encoder_block_hooks],
     }
 
 
