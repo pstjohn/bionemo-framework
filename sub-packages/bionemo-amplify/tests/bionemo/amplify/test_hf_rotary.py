@@ -50,6 +50,9 @@ def test_rope_embeddings():
     torch.testing.assert_close(k_post, k_post_nemo.transpose(0, 1))
 
 
+# TODO: extend this test to try the DotProductAttention and TEDotProductAttention layers and compare how close the
+# outputs are; that seems to be where the outputs between the HF and NeMo implementations are diverging.
+
 # def test_multi_head_attention():
 #     rng = torch.Generator().manual_seed(42)
 #     q = torch.randn([2, 72, 10, 64], dtype=torch.float32, generator=rng)
