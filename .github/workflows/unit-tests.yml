@@ -150,6 +150,10 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           working-directory: ${{ github.run_id }}
 
+      - name: Clean up working directory
+        if: ${{ success() || failure() }}
+        run: rm -rf ${{ github.run_id }}
+
   # Again, because our VMs are not ephemeral, we need to clean up the image after the tests are done. Otherwise `docker
   # images list` will get very cluttered and we'll run out of disk space on these runners.
   clean-up:
