@@ -354,7 +354,6 @@ FROM bionemo2-base AS release
 RUN mkdir -p /workspace/bionemo2/.cache/
 
 COPY VERSION .
-COPY ./scripts ./scripts
 COPY ./README.md ./
 # Copy over folders so that the image can run tests in a self-contained fashion.
 COPY ./ci/scripts ./ci/scripts
