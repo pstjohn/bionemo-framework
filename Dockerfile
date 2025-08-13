@@ -64,7 +64,7 @@ EOF
 ## Drop this when pytorch images ship the fixed commit.
 ARG TE_TAG=9d4e11eaa508383e35b510dc338e58b09c30be73
 
-COPY ./patches/te.patch /tmp/te.patch
+COPY ./docker_build_patches/te.patch /tmp/te.patch
 RUN git clone --recurse-submodules https://github.com/NVIDIA/TransformerEngine.git /tmp/TransformerEngine && \
     cd /tmp/TransformerEngine && \
     git checkout --recurse-submodules ${TE_TAG} && \
