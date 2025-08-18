@@ -14,9 +14,10 @@ repos:
         args: ["--fix"]
       - id: ruff-format
   - repo: https://github.com/executablebooks/mdformat
-    rev: 0.7.17             # Use the latest stable version
+    rev: 0.7.22             # Use the latest stable version
     hooks:
       - id: mdformat
+        language_version: python3.13
         additional_dependencies:
         - mdformat-tables
         - mdformat-gfm
