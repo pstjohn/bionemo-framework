@@ -37,7 +37,7 @@ repos:
     hooks:
       - id: license-header-check
         name: Run license-check script
-        entry: python ci/scripts/license_check.py -c sub-packages -c docs -c ci --license-header ./license_header --modify
+        entry: python ci/scripts/license_check.py
         language: python
         additional_dependencies: ["click==8.1.7"]
         pass_filenames: false
