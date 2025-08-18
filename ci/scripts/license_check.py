@@ -16,10 +16,15 @@
 # limitations under the License.
 
 import argparse
+import logging
+import re
 import textwrap
 from datetime import datetime
 from pathlib import Path
 
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 year = datetime.now().year
 
@@ -42,9 +47,22 @@ license_text = textwrap.dedent("""\
 default_copyright_text = (
     f"SPDX-FileCopyrightText: Copyright (c) {year} NVIDIA CORPORATION & AFFILIATES. All rights reserved."
 )
+default_combined_license = "\n".join([default_copyright_text, license_text])
+
+copyright_regex_pattern = (
+    r"SPDX-FileCopyrightText: Copyright \(c\) \d{4} NVIDIA CORPORATION & AFFILIATES\. All rights reserved\.\n?\r?"
+    r"(?:SPDX-FileCopyrightText: Copyright \(c\) \d{4}.*\n?\r?)*"
+)
+license_regex_pattern = copyright_regex_pattern + re.escape(license_text)
+license_regex = re.compile(license_regex_pattern)
+
+# Basic regex sanity checks.
+assert re.compile(copyright_regex_pattern).match(default_copyright_text), "Default copyright text not valid"
+assert license_regex.match(default_combined_license), "Default license text or regex is not valid"
 
 
 def process_file(filepath: Path, dry_run: bool):
+    """Process a file to ensure it has a valid license block, or add a new one if it doesn't."""
     comment_start = get_comment_delimiter(filepath)
     lines = filepath.read_text().splitlines()
 
@@ -62,8 +80,29 @@ def process_file(filepath: Path, dry_run: bool):
         else:
             break
 
+    def uncomment(text: str) -> str:
+        return re.sub(rf"{comment_start}\ ?", "", text)
+
+    if "# noqa: license-check" in license_block:
+        logger.info(f"Skipping {filepath} because it contains `# noqa: license-check`.")
+        return
+
+    license_block_text = "\n".join(uncomment(line) for line in license_block) + "\n"
+    if len(license_block) != 0 and license_regex.match(license_block_text):
+        logger.info(f"Skipping {filepath} because it contains a valid license block.")
+        return
+
+    logger.info(f"Adding license block to {filepath}.")
+    license_lines = "\n".join([default_copyright_text, license_text])
+    license_lines = textwrap.indent(license_lines, comment_start + " ", predicate=lambda _: True)
+    lines.insert(start_line, license_lines)
+
+    if not dry_run:
+        filepath.write_text("\n".join(lines))
+
 
 def get_comment_delimiter(filepath: Path) -> str:
+    """Get the comment delimiter for a file based on its extension."""
     match filepath.suffix:
         case ".py":
             return "#"
@@ -74,17 +113,20 @@ def get_comment_delimiter(filepath: Path) -> str:
 
 
 def main():
+    """Main entry point for the license check script."""
     parser = argparse.ArgumentParser(description="Ensure files have proper license headers")
     parser.add_argument("files", nargs="+", help="Files to process")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be changed without making changes")
 
     args = parser.parse_args()
 
-    modified_count = 0
     for filename in args.files:
         filepath = Path(filename)
         if not filepath.exists():
             raise FileNotFoundError(f"File {filename} does not exist")
+
+        if filepath.suffix not in [".py", ".rs"]:
+            raise ValueError(f"Unsupported file type: {filepath}")
 
         process_file(filepath, args.dry_run)
 
