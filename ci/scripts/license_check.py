@@ -92,7 +92,6 @@ def process_file(filepath: Path, dry_run: bool):
         logger.info(f"Skipping {filepath} because it contains a valid license block.")
         return
 
-    breakpoint()
     logger.info(f"Adding license block to {filepath}.")
     license_lines = "\n".join([default_copyright_text, license_text])
     license_lines = textwrap.indent(license_lines, comment_start + " ", predicate=lambda _: True)
