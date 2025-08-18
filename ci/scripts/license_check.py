@@ -81,7 +81,7 @@ def process_file(filepath: Path, dry_run: bool):
             break
 
     def uncomment(text: str) -> str:
-        return re.sub(rf"{comment_start}\ ?", "", text)
+        return re.sub(rf"^{comment_start}\ ?", "", text)
 
     if "# noqa: license-check" in license_block:
         logger.info(f"Skipping {filepath} because it contains `# noqa: license-check`.")
@@ -92,13 +92,15 @@ def process_file(filepath: Path, dry_run: bool):
         logger.info(f"Skipping {filepath} because it contains a valid license block.")
         return
 
+    breakpoint()
     logger.info(f"Adding license block to {filepath}.")
     license_lines = "\n".join([default_copyright_text, license_text])
     license_lines = textwrap.indent(license_lines, comment_start + " ", predicate=lambda _: True)
+    license_lines = "\n".join(line.rstrip() for line in license_lines.splitlines()) + "\n"
     lines.insert(start_line, license_lines)
 
     if not dry_run:
-        filepath.write_text("\n".join(lines))
+        filepath.write_text("\n".join(lines) + "\n")
 
 
 def get_comment_delimiter(filepath: Path) -> str:
