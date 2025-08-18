@@ -6,7 +6,6 @@ repos:
         entry: ./ci/scripts/license_check.py
         language: python
         types_or: [python, rust]
-        additional_dependencies: ["click==8.1.7"]
         pass_filenames: true
         always_run: false
   - repo: https://github.com/pre-commit/pre-commit-hooks
