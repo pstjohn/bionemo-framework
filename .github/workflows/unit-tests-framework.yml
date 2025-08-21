@@ -40,6 +40,7 @@ jobs:
             !recipes/**
             !**.md
             !.github/**
+            !.gitignore
             .github/workflows/unit-tests-framework.yml
 
       - name: Show output
