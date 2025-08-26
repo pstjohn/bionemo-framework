@@ -55,15 +55,26 @@ jobs:
           # Determine which directories to run: all for schedule, filtered for other events
           if [[ "${{ github.event_name }}" == "schedule" ]]; then
             DIRS="$ALL_DIRS"
-          elif [[ '${{ steps.get-pr-info.outputs.pr-info }}' != 'null' ]] && echo '${{ steps.get-pr-info.outputs.pr-info }}' | jq -e '.labels[]? | select(.name == "INCLUDE_ALL_RECIPES")' > /dev/null 2>&1; then
-            echo "Found INCLUDE_ALL_RECIPES label - running all directories"
-            DIRS="$ALL_DIRS"
           else
-            CHANGED_FILES='${{ steps.changed-files.outputs.all_changed_files }}'
-            # Filter directories to only those that have changed files
-            DIRS=$(echo "$ALL_DIRS" | jq -c --argjson changed "$CHANGED_FILES" '
-              map(select(. as $dir | $changed | index($dir) != null))
-            ')
+            # Check if INCLUDE_ALL_RECIPES label is present
+            PR_INFO='${{ steps.get-pr-info.outputs.pr-info }}'
+            HAS_INCLUDE_ALL_LABEL=false
+            if [[ "$PR_INFO" != "null" && "$PR_INFO" != "" ]]; then
+              if echo "$PR_INFO" | jq -e '.labels[]? | select(.name == "INCLUDE_ALL_RECIPES")' > /dev/null 2>&1; then
+                HAS_INCLUDE_ALL_LABEL=true
+                echo "Found INCLUDE_ALL_RECIPES label - running all directories"
+              fi
+            fi
+
+            if [[ "$HAS_INCLUDE_ALL_LABEL" == "true" ]]; then
+              DIRS="$ALL_DIRS"
+            else
+              CHANGED_FILES='${{ steps.changed-files.outputs.all_changed_files }}'
+              # Filter directories to only those that have changed files
+              DIRS=$(echo "$ALL_DIRS" | jq -c --argjson changed "$CHANGED_FILES" '
+                map(select(. as $dir | $changed | index($dir) != null))
+              ')
+            fi
           fi
 
           # Assign Docker images to the selected directories
