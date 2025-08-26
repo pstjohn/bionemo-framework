@@ -48,16 +48,20 @@ jobs:
             recipes/**
 
       - id: set-dirs
+        name: Determine which directories to run
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_INFO: ${{ steps.get-pr-info.outputs.pr-info }}
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
           # Get all recipe and model directories
           ALL_DIRS=$(ls -d recipes/*/ models/*/ 2>/dev/null | jq -R -s -c 'split("\n")[:-1] | map(rtrimstr("/"))')
 
           # Determine which directories to run: all for schedule, filtered for other events
-          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
             DIRS=$(echo "$ALL_DIRS")
           else
             # Check if INCLUDE_ALL_RECIPES label is present
-            PR_INFO='${{ steps.get-pr-info.outputs.pr-info }}'
             HAS_INCLUDE_ALL_LABEL=false
             if [[ "$PR_INFO" != "null" && "$PR_INFO" != "" ]]; then
               if echo "$PR_INFO" | jq -e '.labels[]? | select(.name == "INCLUDE_ALL_RECIPES")' > /dev/null 2>&1; then
@@ -69,7 +73,6 @@ jobs:
             if [[ "$HAS_INCLUDE_ALL_LABEL" == "true" ]]; then
               DIRS=$(echo "$ALL_DIRS")
             else
-              CHANGED_FILES='${{ steps.changed-files.outputs.all_changed_files }}'
               # Filter directories to only those that have changed files
               DIRS=$(echo "$ALL_DIRS" | jq -c --argjson changed "$CHANGED_FILES" '
                 map(select(. as $dir | $changed | index($dir) != null))
