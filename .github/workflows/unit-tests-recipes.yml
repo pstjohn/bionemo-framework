@@ -100,7 +100,6 @@ jobs:
         run: |
           echo '${{ toJSON(steps.changed-files.outputs) }}'
           echo '${{ toJSON(steps.set-dirs.outputs) }}'
-          echo '${{ toJSON(steps.get-pr-info.outputs.pr-info) }}'
         shell:
           bash
 
