@@ -141,3 +141,20 @@ jobs:
       - name: Run tests
         working-directory: ${{ matrix.recipe.dir }}
         run: pytest -v .
+
+  verify-recipe-tests:
+    # This job checks the status of the unit-tests matrix and fails if any matrix job failed or was cancelled.
+    # Use this job as the required check for PRs.
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check unit-tests matrix status
+        run: |
+          if [[ "${{ needs.unit-tests.result }}" == "failure" || "${{ needs.unit-tests.result }}" == "cancelled" ]]; then
+            echo "Some unit-tests matrix jobs have failed or been cancelled!"
+            exit 1
+          else
+            echo "All unit-tests matrix jobs have completed successfully or were skipped!"
+            exit 0
+          fi
