@@ -3,13 +3,12 @@ name: "BioNeMo Recipes CI"
 on:
   push:
     branches:
-      - main
       - "pull-request/[0-9]+"
       - "dependabot/**"
   merge_group:
     types: [checks_requested]
   schedule:
-    - cron: "0 7 * * *" # Runs at 7 AM UTC daily (12 AM MST)
+    - cron: "0 9 * * *" # Runs at 9 AM UTC daily (2 AM MST)
 
 defaults:
   run:
@@ -28,6 +27,9 @@ jobs:
       dirs: ${{ steps.set-dirs.outputs.dirs }}
 
     steps:
+      - id: get-pr-info
+        uses: nv-gha-runners/get-pr-info@main
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -38,24 +40,50 @@ jobs:
         with:
           json: true
           matrix: true
-          base_sha: main
+          base_sha:  ${{ fromJSON(steps.get-pr-info.outputs.pr-info).base.ref }}
           dir_names: true
           dir_names_max_depth: 2
           files: |
             models/**
             recipes/**
-            .github/workflows/unit-tests-recipes.yml
 
       - id: set-dirs
+        name: Determine which directories to run
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_INFO: ${{ steps.get-pr-info.outputs.pr-info }}
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
           # Get all recipe and model directories
           ALL_DIRS=$(ls -d recipes/*/ models/*/ 2>/dev/null | jq -R -s -c 'split("\n")[:-1] | map(rtrimstr("/"))')
-          CHANGED_FILES='${{ steps.changed-files.outputs.all_changed_files }}'
-          # Filter directories to only those that have changed files. Then assign a Docker image to each.
+
+          # Determine which directories to run: all for schedule, filtered for other events
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            DIRS=$(echo "$ALL_DIRS")
+          else
+            # Check if INCLUDE_ALL_RECIPES label is present
+            HAS_INCLUDE_ALL_LABEL=false
+            if [[ "$PR_INFO" != "null" && "$PR_INFO" != "" ]]; then
+              if echo "$PR_INFO" | jq -e '.labels[]? | select(.name == "INCLUDE_ALL_RECIPES")' > /dev/null 2>&1; then
+                HAS_INCLUDE_ALL_LABEL=true
+                echo "Found INCLUDE_ALL_RECIPES label - running all directories"
+              fi
+            fi
+
+            if [[ "$HAS_INCLUDE_ALL_LABEL" == "true" ]]; then
+              DIRS=$(echo "$ALL_DIRS")
+            else
+              # Filter directories to only those that have changed files
+              DIRS=$(echo "$ALL_DIRS" | jq -c --argjson changed "$CHANGED_FILES" '
+                map(select(. as $dir | $changed | index($dir) != null))
+              ')
+            fi
+          fi
+
+          # Assign Docker images to the selected directories
           # Currently, AMPLIFY is the only folder that needs a custom base image, since we have to support both TE and
           # xformers-based models for golden value testing. The rest of the models use the default pytorch image.
-          DIRS=$(echo "$ALL_DIRS" | jq -c --argjson changed "$CHANGED_FILES" '
-            map(select(. as $dir | $changed | index($dir) != null)) |
+          DIRS_WITH_IMAGES=$(echo "$DIRS" | jq -c '
             map({
               dir: .,
               image: (
@@ -67,7 +95,7 @@ jobs:
               )
             })
           ')
-          echo "dirs=$DIRS" >> $GITHUB_OUTPUT
+          echo "dirs=$DIRS_WITH_IMAGES" >> $GITHUB_OUTPUT
       - name: Show output
         run: |
           echo '${{ toJSON(steps.changed-files.outputs) }}'
@@ -78,6 +106,7 @@ jobs:
   unit-tests:
     needs: changed-dirs
     runs-on: linux-amd64-gpu-l4-latest-1
+    if: ${{ needs.changed-dirs.outputs.dirs != '[]' }}
     container:
       image: ${{ matrix.recipe.image }}
     strategy:
@@ -86,6 +115,8 @@ jobs:
       fail-fast: false
 
     steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
