@@ -106,7 +106,7 @@ jobs:
   unit-tests:
     needs: changed-dirs
     runs-on: linux-amd64-gpu-l4-latest-1
-    if: ${{ needs.changed-dirs.outputs.any_changed == 'true' }}
+    if: ${{ needs.changed-dirs.outputs.dirs != '[]' }}
     container:
       image: ${{ matrix.recipe.image }}
     strategy:
