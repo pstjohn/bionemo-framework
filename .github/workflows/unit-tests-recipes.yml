@@ -27,6 +27,9 @@ jobs:
       dirs: ${{ steps.set-dirs.outputs.dirs }}
 
     steps:
+      - id: get-pr-info
+        uses: nv-gha-runners/get-pr-info@main
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -37,7 +40,7 @@ jobs:
         with:
           json: true
           matrix: true
-          base_sha: main
+          base_sha:  ${{ fromJSON(steps.get-pr-info.outputs.pr-info).base.ref }}
           dir_names: true
           dir_names_max_depth: 2
           files: |
@@ -51,6 +54,9 @@ jobs:
 
           # Determine which directories to run: all for schedule, filtered for other events
           if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            DIRS="$ALL_DIRS"
+          elif [[ '${{ steps.get-pr-info.outputs.pr-info }}' != 'null' ]] && echo '${{ steps.get-pr-info.outputs.pr-info }}' | jq -e '.labels[]? | select(.name == "INCLUDE_ALL_RECIPES")' > /dev/null 2>&1; then
+            echo "Found INCLUDE_ALL_RECIPES label - running all directories"
             DIRS="$ALL_DIRS"
           else
             CHANGED_FILES='${{ steps.changed-files.outputs.all_changed_files }}'
@@ -80,6 +86,7 @@ jobs:
         run: |
           echo '${{ toJSON(steps.changed-files.outputs) }}'
           echo '${{ toJSON(steps.set-dirs.outputs) }}'
+          echo '${{ toJSON(steps.get-pr-info.outputs.pr-info) }}'
         shell:
           bash
 
@@ -95,6 +102,8 @@ jobs:
       fail-fast: false
 
     steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
