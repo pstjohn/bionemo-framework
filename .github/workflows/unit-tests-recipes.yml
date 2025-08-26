@@ -43,7 +43,6 @@ jobs:
           files: |
             models/**
             recipes/**
-            .github/workflows/unit-tests-recipes.yml
 
       - id: set-dirs
         run: |
