@@ -41,6 +41,7 @@ jobs:
             !**.md
             !.github/**
             !.gitignore
+            !.devcontainer/**
             .github/workflows/unit-tests-framework.yml
 
       - name: Show output
