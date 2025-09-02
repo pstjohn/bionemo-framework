@@ -167,6 +167,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache bionemo test data
+        uses: actions/cache@v4
+        with:
+          path: /root/.cache/bionemo
+          key: ${{ runner.os }}-bionemo-test-data-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-bionemo-test-data
+
       - name: Run tests
         # Tests in this stage generate code coverage metrics for the repository
         # Coverage data is uploaded to Codecov in subsequent stages
