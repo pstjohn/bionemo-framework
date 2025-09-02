@@ -47,9 +47,7 @@ jobs:
       - name: Show output
         run: |
           echo '${{ toJSON(steps.changed-files.outputs) }}'
-        shell:
-          bash
-
+        shell: bash
 
   pre-commit:
     runs-on: ubuntu-latest
@@ -152,7 +150,6 @@ jobs:
             type=registry,ref=svcbionemo023/bionemo-build-cache:main
           cache-to: ${{ steps.cache.outputs.cache-to }}
 
-
   run-tests:
     needs:
       - build-bionemo-image
@@ -166,6 +163,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Ensure cache directory exists
+        run: mkdir -p /root/.cache/bionemo
 
       - name: Cache bionemo test data
         uses: actions/cache@v4
@@ -225,7 +225,6 @@ jobs:
         run: |
           chmod +x ./ci/scripts/run_pytest_slow.sh
           ./ci/scripts/run_pytest_slow.sh
-
 
   run-notebooks-docs:
     needs:
