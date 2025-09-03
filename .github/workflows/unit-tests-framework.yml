@@ -171,9 +171,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /root/.cache/bionemo
-          key: ${{ runner.os }}-bionemo-test-data-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-bionemo-test-data
+          key: bionemo-test-data-v1  # bump when data format changes
+          retention-days: 14
 
       - name: Run tests
         # Tests in this stage generate code coverage metrics for the repository
