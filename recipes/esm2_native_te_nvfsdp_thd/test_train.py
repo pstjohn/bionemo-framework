@@ -23,7 +23,7 @@ from train import main
 
 
 @pytest.mark.xfail(
-    torch.cuda.get_device_capability() != (10, 0),
+    torch.cuda.get_device_capability() == (12, 0),
     reason="CUDNN padded packed sequences not supported on all hardware currently (nvbugs/5458694).",
 )
 def test_main_invocation(monkeypatch, tmp_path):
@@ -48,7 +48,7 @@ def test_main_invocation(monkeypatch, tmp_path):
 
 
 @pytest.mark.xfail(
-    torch.cuda.get_device_capability() != (10, 0),
+    torch.cuda.get_device_capability() == (12, 0),
     reason="CUDNN padded packed sequences not supported on all hardware currently (nvbugs/5458694).",
 )
 def test_main_invocation_ddp(monkeypatch, tmp_path):
