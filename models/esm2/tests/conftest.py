@@ -31,6 +31,12 @@ if not os.environ.get("TRITON_LIBCUDA_PATH"):
     os.environ["TRITON_LIBCUDA_PATH"] = "/usr/local/cuda/lib64"
 
 
+@pytest.fixture(autouse=True)
+def use_te_debug(monkeypatch):
+    monkeypatch.setenv("NVTE_DEBUG", "1")
+    monkeypatch.setenv("NVTE_DEBUG_LEVEL", "2")
+
+
 @pytest.fixture
 def tokenizer():
     return AutoTokenizer.from_pretrained("facebook/esm2_t6_8M_UR50D")
@@ -42,6 +48,7 @@ def bshd_data_collator(tokenizer):
         tokenizer=tokenizer,
         mlm_probability=0.15,
         pad_to_multiple_of=1024,
+        seed=42,
     )
 
 
@@ -52,6 +59,7 @@ def thd_data_collator(tokenizer):
         mlm_probability=0.15,
         pad_to_multiple_of=1024,
         return_flash_attn_kwargs=True,
+        seed=42,
     )
 
 

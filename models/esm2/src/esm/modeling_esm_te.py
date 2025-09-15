@@ -200,6 +200,7 @@ class NVEsmEncoder(nn.Module):
             te_rope_emb = self.rotary_embeddings(max_seq_len=cu_seq_lens_q[-1]).to(
                 device=hidden_states.device, dtype=hidden_states.dtype, non_blocking=True
             )
+            hidden_states = hidden_states.squeeze(0)
         else:
             te_rope_emb = None
 
