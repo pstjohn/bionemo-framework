@@ -91,9 +91,9 @@ def test_thd_values_match(te_model_checkpoint, tokenizer):
     bshd_outputs = model_bshd(**input_data_bhsd)
     thd_outputs = model_thd(**input_data_thd)
 
+    bhsd_logits = bshd_outputs.logits[input_data_bhsd["attention_mask"].to(bool)]
+    torch.testing.assert_close(bhsd_logits, thd_outputs.logits)
+
     print("bshd_outputs.loss", bshd_outputs.loss)
     print("thd_outputs.loss", thd_outputs.loss)
-    torch.testing.assert_close(bshd_outputs.loss, thd_outputs.loss, atol=1e-2, rtol=1e-2)
-
-    bhsd_logits = bshd_outputs.logits[input_data_bhsd["attention_mask"].to(bool)]
-    torch.testing.assert_close(bhsd_logits, thd_outputs.logits, atol=1e-3, rtol=1e-3)
+    torch.testing.assert_close(bshd_outputs.loss, thd_outputs.loss)
