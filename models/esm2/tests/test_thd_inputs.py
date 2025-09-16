@@ -30,7 +30,9 @@ def te_model_checkpoint(tmp_path):
 
 
 def test_thd_from_collator_output(te_model_checkpoint, input_data_thd):
-    model_thd = NVEsmForMaskedLM.from_pretrained(te_model_checkpoint, attn_input_format="thd", dtype=torch.bfloat16)
+    model_thd = NVEsmForMaskedLM.from_pretrained(
+        te_model_checkpoint, attn_input_format="thd", torch_dtype=torch.bfloat16
+    )
     model_thd.to("cuda")
     input_data_thd = {k: v.to("cuda") if isinstance(v, torch.Tensor) else v for k, v in input_data_thd.items()}
     with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
@@ -76,8 +78,10 @@ def test_thd_values_match(te_model_checkpoint, tokenizer):
     input_data_bhsd = bhsd_collator(sequences)
     input_data_thd = thd_collator(sequences)
 
-    model_bshd = NVEsmForMaskedLM.from_pretrained(te_model_checkpoint, dtype=torch.bfloat16)
-    model_thd = NVEsmForMaskedLM.from_pretrained(te_model_checkpoint, attn_input_format="thd", dtype=torch.bfloat16)
+    model_bshd = NVEsmForMaskedLM.from_pretrained(te_model_checkpoint, torch_dtype=torch.bfloat16)
+    model_thd = NVEsmForMaskedLM.from_pretrained(
+        te_model_checkpoint, attn_input_format="thd", torch_dtype=torch.bfloat16
+    )
     model_bshd.to("cuda")
     model_thd.to("cuda")
 
