@@ -176,6 +176,10 @@ class NVEsmEncoder(nn.Module):
                 raise ValueError(
                     "cu_seq_lens_q, cu_seq_lens_k, max_length_q, and max_length_k must be provided when using THD inputs."
                 )
+            assert hidden_states.dim() == 3 and hidden_states.size(0) == 1, (
+                "THD expects embeddings shaped [1, total_tokens, hidden_size]."
+            )
+            hidden_states = hidden_states.squeeze(0)
 
         elif self.config.attn_input_format == "bshd":
             if any(x is not None for x in [cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k]):
@@ -183,26 +187,28 @@ class NVEsmEncoder(nn.Module):
                     "cu_seq_lens_q, cu_seq_lens_k, max_length_q, and max_length_k are not allowed when using BSHD inputs."
                 )
 
-        if self.config.attn_input_format == "bshd" and self.te_rope_emb is not None:
-            te_rope_emb = self.te_rope_emb.to(
-                device=hidden_states.device, dtype=hidden_states.dtype, non_blocking=True
-            )
-            seq_len = hidden_states.shape[1]
-            if te_rope_emb.size(0) < seq_len:
-                raise RuntimeError(
-                    f"ROPE length {te_rope_emb.size(0)} < input seq length {seq_len}. "
-                    f"Increase max_position_embeddings."
+        te_rope_emb = None
+        if self.config.position_embedding_type == "rotary":
+            if self.config.attn_input_format == "bshd":
+                te_rope_emb = self.te_rope_emb.to(
+                    device=hidden_states.device, dtype=hidden_states.dtype, non_blocking=True
                 )
-            te_rope_emb = te_rope_emb[:seq_len]
+                seq_len = hidden_states.shape[1]
+                if te_rope_emb.size(0) < seq_len:
+                    raise RuntimeError(
+                        f"ROPE length {te_rope_emb.size(0)} < input seq length {seq_len}. "
+                        f"Increase max_position_embeddings."
+                    )
+                te_rope_emb = te_rope_emb[:seq_len]
 
-        elif self.config.attn_input_format == "thd":
-            assert cu_seq_lens_q is not None
-            te_rope_emb = self.rotary_embeddings(max_seq_len=cu_seq_lens_q[-1]).to(
-                device=hidden_states.device, dtype=hidden_states.dtype, non_blocking=True
-            )
-            hidden_states = hidden_states.squeeze(0)
-        else:
-            te_rope_emb = None
+            elif self.config.attn_input_format == "thd":
+                assert cu_seq_lens_q is not None
+                te_rope_emb = self.rotary_embeddings(max_seq_len=cu_seq_lens_q[-1]).to(
+                    device=hidden_states.device, dtype=hidden_states.dtype, non_blocking=True
+                )
+
+            else:
+                raise ValueError(f"Unsupported attention input format: {self.config.attn_input_format}")
 
         for layer_module in self.layers:
             if output_hidden_states:

@@ -171,9 +171,17 @@ class MLMDataCollatorWithFlattening:
         batch = self.flattening_collator(features, return_tensors)
 
         special_tokens_mask = batch.pop("special_tokens_mask", None)
-        batch["input_ids"], batch["labels"] = self.mlm_collator.torch_mask_tokens(
-            batch["input_ids"], special_tokens_mask=special_tokens_mask
-        )
+
+        if return_tensors == "pt":
+            batch["input_ids"], batch["labels"] = self.mlm_collator.torch_mask_tokens(
+                batch["input_ids"], special_tokens_mask=special_tokens_mask
+            )
+        elif return_tensors == "np":
+            batch["input_ids"], batch["labels"] = self.mlm_collator.numpy_mask_tokens(
+                batch["input_ids"], special_tokens_mask=special_tokens_mask
+            )
+        else:
+            raise ValueError(f'return_tensors must be one of ("pt", "np"), {return_tensors=} not suported')
 
         return batch
 
