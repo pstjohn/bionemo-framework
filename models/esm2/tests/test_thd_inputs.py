@@ -41,8 +41,13 @@ def test_thd_from_collator_output(te_model_checkpoint, input_data_thd):
     assert outputs.loss < 3.0
 
 
-def test_thd_values_match(te_model_checkpoint, tokenizer):
+def test_thd_values_match(te_model_checkpoint, tokenizer, monkeypatch):
     # Manually masked input tokens so that both BSHD and THD models have the same mask pattern
+
+    # We know that the THD model is using Flash Attention, so use the same kernel for the BSHD model to ensure the
+    # values are as close as possible.
+    monkeypatch.setenv("NVTE_FLASH_ATTN", "1")
+    monkeypatch.setenv("NVTE_FUSED_ATTN", "0")
 
     proteins = [
         "MLSATEKLSDYISSLFASVSIINSISTEDLFFLKLTCQTFSKDSEEYKAAYRILRGVQRGKVQIIEEALVS",

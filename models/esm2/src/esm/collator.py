@@ -93,8 +93,6 @@ class MLMDataCollatorWithFlattening:
         return_tensors: str = "pt",
         seed: int | None = None,
         # DataCollatorWithFlattening
-        return_position_ids=True,
-        separator_id=-100,
         return_flash_attn_kwargs=True,
         return_seq_idx=False,
     ):
@@ -111,8 +109,6 @@ class MLMDataCollatorWithFlattening:
             seed=seed,
         )
         self.flattening_collator = DataCollatorWithFlattening(
-            return_position_ids=return_position_ids,
-            separator_id=separator_id,
             return_flash_attn_kwargs=return_flash_attn_kwargs,
             return_seq_idx=return_seq_idx,
         )
@@ -191,7 +187,6 @@ class DataCollatorWithFlattening(DefaultDataCollator):
     Does the following:
 
     - concatenates the entire mini batch into single long sequence of shape [1, total_tokens]
-    - uses `separator_id` to separate sequences within the concatenated `labels`, default value is -100
     - no padding will be added, returns `input_ids`, `labels` and `position_ids` by default
     - optionally returns the kwargs contained in FlashAttentionKwargs
     - optionally returns seq_idx indicating which sequence each token belongs to
@@ -316,10 +311,11 @@ class DataCollatorWithFlattening(DefaultDataCollator):
             raise ValueError(f'return_tensors must be one of ("pt", "np"), {return_tensors=} not suported')
 
         for k, v in batch.items():
+            v_ = v  # Avoid modifying the original loop variable v
             if k in self._batch_dim_keys:
-                batch[k] = [v]
+                v_ = [v]
             # Flash attention max_len_{q,k} are python ints
             if k not in self._py_int_keys:
-                batch[k] = data_cls(v, dtype=dtype_64 if k in self._int_64_keys else dtype_32)
+                batch[k] = data_cls(v_, dtype=dtype_64 if k in self._int_64_keys else dtype_32)
 
         return batch
