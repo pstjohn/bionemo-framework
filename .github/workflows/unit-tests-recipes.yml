@@ -51,10 +51,10 @@ jobs:
           matrix: true
           base_sha: ${{ steps.merge-base.outputs.merge-base }}
           dir_names: true
-          dir_names_max_depth: 2
+          dir_names_max_depth: 3
           files: |
-            models/**
-            recipes/**
+            bionemo-recipes/models/**
+            bionemo-recipes/recipes/**
 
       - id: set-dirs
         name: Determine which directories to run
@@ -64,7 +64,7 @@ jobs:
           CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
           # Get all recipe and model directories
-          ALL_DIRS=$(ls -d recipes/*/ models/*/ 2>/dev/null | jq -R -s -c 'split("\n")[:-1] | map(rtrimstr("/"))')
+          ALL_DIRS=$(ls -d bionemo-recipes/models/*/ bionemo-recipes/recipes/*/ 2>/dev/null | jq -R -s -c 'split("\n")[:-1] | map(rtrimstr("/"))')
 
           # Determine which directories to run: all for schedule, filtered for other events
           if [[ "$EVENT_NAME" == "schedule" ]]; then
@@ -103,7 +103,7 @@ jobs:
             map({
               dir: .,
               image: (
-                if . == "models/amplify" then
+                if . == "bionemo-recipes/models/amplify" then
                   "svcbionemo023/bionemo-framework:amplify-model-devcontainer-082025"
                 else
                   "svcbionemo023/bionemo-framework:pytorch25.06-py3-squashed-zstd"
