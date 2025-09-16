@@ -111,7 +111,9 @@ class MLMDataCollatorWithFlattening:
         self.flattening_collator = DataCollatorWithFlattening(
             return_flash_attn_kwargs=return_flash_attn_kwargs,
             return_seq_idx=return_seq_idx,
+            return_tensors=return_tensors,
         )
+        self.return_tensors = return_tensors
 
     def __call__(self, features, return_tensors=None):
         """Process a batch of variable-length sequences for Flash Attention with MLM.
@@ -168,6 +170,9 @@ class MLMDataCollatorWithFlattening:
             sequence_length=total_tokens, optimized for Flash Attention's variable-length
             sequence processing capabilities.
         """
+        if return_tensors is None:
+            return_tensors = self.return_tensors
+
         batch = self.flattening_collator(features, return_tensors)
 
         special_tokens_mask = batch.pop("special_tokens_mask", None)
