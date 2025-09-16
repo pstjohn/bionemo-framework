@@ -15,8 +15,9 @@
 
 import pytest
 import torch
-from transformers import AutoModelForMaskedLM, DataCollatorForTokenClassification, DataCollatorWithFlattening
+from transformers import AutoModelForMaskedLM, DataCollatorForTokenClassification
 
+from esm.collator import DataCollatorWithFlattening
 from esm.convert import convert_esm_hf_to_te
 from esm.modeling_esm_te import NVEsmForMaskedLM
 
@@ -43,11 +44,6 @@ def test_thd_from_collator_output(te_model_checkpoint, input_data_thd):
 
 def test_thd_values_match(te_model_checkpoint, tokenizer, monkeypatch):
     # Manually masked input tokens so that both BSHD and THD models have the same mask pattern
-
-    # We know that the THD model is using Flash Attention, so use the same kernel for the BSHD model to ensure the
-    # values are as close as possible.
-    monkeypatch.setenv("NVTE_FLASH_ATTN", "1")
-    monkeypatch.setenv("NVTE_FUSED_ATTN", "0")
 
     proteins = [
         "MLSATEKLSDYISSLFASVSIINSISTEDLFFLKLTCQTFSKDSEEYKAAYRILRGVQRGKVQIIEEALVS",
@@ -102,3 +98,5 @@ def test_thd_values_match(te_model_checkpoint, tokenizer, monkeypatch):
     print("bshd_outputs.loss", bshd_outputs.loss)
     print("thd_outputs.loss", thd_outputs.loss)
     torch.testing.assert_close(bshd_outputs.loss, thd_outputs.loss)
+
+    breakpoint()
