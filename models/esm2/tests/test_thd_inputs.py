@@ -94,9 +94,4 @@ def test_thd_values_match(te_model_checkpoint, tokenizer, monkeypatch):
 
     bhsd_logits = bshd_outputs.logits[input_data_bhsd["attention_mask"].to(bool)]
     torch.testing.assert_close(bhsd_logits, thd_outputs.logits)
-
-    print("bshd_outputs.loss", bshd_outputs.loss)
-    print("thd_outputs.loss", thd_outputs.loss)
     torch.testing.assert_close(bshd_outputs.loss, thd_outputs.loss)
-
-    breakpoint()
