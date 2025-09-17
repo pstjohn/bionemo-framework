@@ -102,6 +102,7 @@ jobs:
           DIRS_WITH_IMAGES=$(echo "$DIRS" | jq -c '
             map({
               dir: .,
+              name: (. | sub("^bionemo-recipes/"; "")),
               image: (
                 if . == "bionemo-recipes/models/amplify" then
                   "svcbionemo023/bionemo-framework:amplify-model-devcontainer-082025"
@@ -129,7 +130,7 @@ jobs:
     needs: changed-dirs
     runs-on: linux-amd64-gpu-l4-latest-1
     if: ${{ needs.changed-dirs.outputs.dirs != '[]' }}
-    name: "unit-tests (${{ replace(matrix.recipe.dir, 'bionemo-recipes/', '') }})"
+    name: "unit-tests (${{ matrix.recipe.name }})"
     container:
       image: ${{ matrix.recipe.image }}
       options: --shm-size=16G
