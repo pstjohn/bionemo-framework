@@ -129,6 +129,7 @@ jobs:
     needs: changed-dirs
     runs-on: linux-amd64-gpu-l4-latest-1
     if: ${{ needs.changed-dirs.outputs.dirs != '[]' }}
+    name: "unit-tests (${{ replace(matrix.recipe.dir, 'bionemo-recipes/', '') }})"
     container:
       image: ${{ matrix.recipe.image }}
       options: --shm-size=16G
@@ -138,7 +139,6 @@ jobs:
       fail-fast: false
 
     steps:
-
       - name: Show GPU info
         run: nvidia-smi
       - name: Setup proxy cache
