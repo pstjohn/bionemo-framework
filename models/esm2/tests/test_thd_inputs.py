@@ -73,11 +73,21 @@ def test_thd_values_match(te_model_checkpoint, tokenizer, monkeypatch):
         for seq in sequences
     ]
 
-    bhsd_collator = DataCollatorForTokenClassification(tokenizer=tokenizer, padding=True)
+    bshd_collator = DataCollatorForTokenClassification(tokenizer=tokenizer, padding=True)
     thd_collator = DataCollatorWithFlattening(return_flash_attn_kwargs=True)
 
-    input_data_bhsd = bhsd_collator(sequences)
+    input_data_bshd = bshd_collator(sequences)
     input_data_thd = thd_collator(sequences)
+
+    torch.testing.assert_close(
+        input_data_bshd["input_ids"][input_data_bshd["attention_mask"].to(bool)],
+        input_data_thd["input_ids"].flatten(0),
+    )
+
+    torch.testing.assert_close(
+        input_data_bshd["labels"][input_data_bshd["attention_mask"].to(bool)],
+        input_data_thd["labels"].flatten(0),
+    )
 
     model_bshd = NVEsmForMaskedLM.from_pretrained(te_model_checkpoint, torch_dtype=torch.bfloat16)
     model_thd = NVEsmForMaskedLM.from_pretrained(
@@ -86,12 +96,12 @@ def test_thd_values_match(te_model_checkpoint, tokenizer, monkeypatch):
     model_bshd.to("cuda")
     model_thd.to("cuda")
 
-    input_data_bhsd = {k: v.to("cuda") for k, v in input_data_bhsd.items()}
+    input_data_bshd = {k: v.to("cuda") for k, v in input_data_bshd.items()}
     input_data_thd = {k: v.to("cuda") if isinstance(v, torch.Tensor) else v for k, v in input_data_thd.items()}
 
-    bshd_outputs = model_bshd(**input_data_bhsd)
+    bshd_outputs = model_bshd(**input_data_bshd)
     thd_outputs = model_thd(**input_data_thd)
 
-    bhsd_logits = bshd_outputs.logits[input_data_bhsd["attention_mask"].to(bool)]
+    bhsd_logits = bshd_outputs.logits[input_data_bshd["attention_mask"].to(bool)]
     torch.testing.assert_close(bhsd_logits, thd_outputs.logits)
     torch.testing.assert_close(bshd_outputs.loss, thd_outputs.loss)
