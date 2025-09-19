@@ -83,8 +83,8 @@ def main(args: DictConfig) -> float | None:
         wandb.init(**args.wandb_init_args, config=OmegaConf.to_container(args, resolve=True, throw_on_missing=True))
 
     # Create an empty ESM-2 model with a masked language model head.
-    if "facebook" in args.model_name:
-        config = AutoConfig.from_pretrained(args.model_name, dtype=torch.bfloat16)
+    if "facebook" in args.model_tag:
+        config = AutoConfig.from_pretrained(args.model_tag, dtype=torch.bfloat16)
         from transformers.models.esm.modeling_esm import EsmForMaskedLM  # noqa: F401
 
         with (
@@ -94,7 +94,7 @@ def main(args: DictConfig) -> float | None:
         del model.esm.contact_head
 
     else:
-        config = AutoConfig.from_pretrained(args.model_name, trust_remote_code=True, dtype=torch.bfloat16)
+        config = AutoConfig.from_pretrained(args.model_tag, trust_remote_code=True, dtype=torch.bfloat16)
         config.max_seq_length = args.max_seq_length
         config.micro_batch_size = args.micro_batch_size
         with (

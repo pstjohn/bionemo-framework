@@ -1,5 +1,5 @@
 # Training config
-model_name: ???
+model_tag: ???
 micro_batch_size: ???
 max_seq_length: 1024
 data_path: .

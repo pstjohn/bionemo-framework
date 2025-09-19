@@ -126,7 +126,7 @@ def test_sanity_convergence_mfsdp_eager_meta_device(mock_distributed_config, tmp
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
-                "model_name=facebook/esm2_t6_8M_UR50D",
+                "model_tag=facebook/esm2_t6_8M_UR50D",
                 "use_meta_device=true",
             ],
         )
@@ -187,7 +187,7 @@ def test_sanity_convergence_mfsdp_eager(mock_distributed_config, tmp_path):
     with initialize_config_dir(config_dir=str(recipe_dir / "hydra_config"), version_base="1.2"):
         sanity_config = compose(
             config_name="L0_sanity",
-            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_name=facebook/esm2_t6_8M_UR50D"],
+            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_tag=facebook/esm2_t6_8M_UR50D"],
         )
 
     final_loss = main_mfsdp(sanity_config)
@@ -201,7 +201,7 @@ def test_sanity_convergence_ddp_eager(mock_distributed_config, tmp_path):
     with initialize_config_dir(config_dir=str(recipe_dir / "hydra_config"), version_base="1.2"):
         sanity_config = compose(
             config_name="L0_sanity",
-            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_name=facebook/esm2_t6_8M_UR50D"],
+            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_tag=facebook/esm2_t6_8M_UR50D"],
         )
 
     final_loss = main_ddp(sanity_config)
@@ -215,7 +215,7 @@ def test_sanity_convergence_fsdp2_eager(mock_distributed_config, tmp_path):
     with initialize_config_dir(config_dir=str(recipe_dir / "hydra_config"), version_base="1.2"):
         sanity_config = compose(
             config_name="L0_sanity",
-            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_name=facebook/esm2_t6_8M_UR50D"],
+            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_tag=facebook/esm2_t6_8M_UR50D"],
         )
 
     final_loss = main_fsdp2(sanity_config)
@@ -232,7 +232,7 @@ def test_sanity_convergence_fsdp2_eager_meta_device(mock_distributed_config, tmp
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
-                "model_name=facebook/esm2_t6_8M_UR50D",
+                "model_tag=facebook/esm2_t6_8M_UR50D",
                 "use_meta_device=true",
             ],
         )
@@ -311,7 +311,7 @@ def test_multi_gpu_train_eager_fsdp2_meta_device(tmp_path):
             "train_fsdp2.py",
             "--config-name",
             "L0_sanity",
-            "model_name=facebook/esm2_t6_8M_UR50D",
+            "model_tag=facebook/esm2_t6_8M_UR50D",
             "use_meta_device=true",
             "num_train_steps=4",
         ]
