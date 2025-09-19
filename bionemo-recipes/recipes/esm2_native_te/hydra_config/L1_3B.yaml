@@ -3,8 +3,10 @@ defaults:
 
 # Training config
 model_tag: nvidia/esm2_t36_3B_UR50D
-micro_batch_size: 16
 num_train_steps: 10_000
+
+dataset:
+  micro_batch_size: 16
 
 # WandB config
 wandb_init_args:
