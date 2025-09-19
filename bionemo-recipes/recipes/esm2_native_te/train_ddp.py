@@ -43,6 +43,9 @@ def main(args: DictConfig) -> float | None:
     """
     # Initialize the distributed configuration, including creating the distributed process group.
     dist_config = DistributedConfig()
+    logger.info("Initializing distributed training: %s", dist_config)
+    torch.distributed.init_process_group(backend="nccl")
+    torch.cuda.set_device(dist_config.local_rank)
 
     # Create a device mesh for DDP. While this isn't strictly necessary, it mirrors the device mesh we create for FSDP2
     # and MFSDP.
@@ -142,6 +145,8 @@ def main(args: DictConfig) -> float | None:
     # Clean up distributed training
     if dist_config.is_main_process():
         wandb.finish()
+
+    torch.distributed.destroy_process_group()
 
     return loss_value
 

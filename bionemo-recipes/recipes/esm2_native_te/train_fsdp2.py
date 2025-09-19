@@ -47,6 +47,9 @@ def main(args: DictConfig) -> float | None:  # noqa: C901
     """
     # Initialize the distributed configuration, including creating the distributed process group.
     dist_config = DistributedConfig()
+    logger.info("Initializing distributed training: %s", dist_config)
+    torch.distributed.init_process_group(backend="nccl")
+    torch.cuda.set_device(dist_config.local_rank)
 
     # Create a device mesh for FSDP.
     # We have to create a dummy mesh dimension for context parallel and tensor parallel for things
@@ -154,6 +157,8 @@ def main(args: DictConfig) -> float | None:  # noqa: C901
     # Clean up distributed training
     if dist_config.is_main_process():
         wandb.finish()
+
+    torch.distributed.destroy_process_group()
 
     return loss_value
 
