@@ -13,10 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import time
+from collections import deque
 
+import numpy as np
 from transformers.trainer_callback import TrainerCallback, TrainerControl, TrainerState
 from transformers.training_args import TrainingArguments
+
+
+logger = logging.getLogger(__name__)
 
 
 class StopAfterNStepsCallback(TrainerCallback):
@@ -39,17 +45,35 @@ class StopAfterNStepsCallback(TrainerCallback):
 class StepTimingCallback(TrainerCallback):
     """Callback to log the time taken for each step."""
 
-    def __init__(self):
-        """Initialize the callback."""
-        self.step_start_time = None
+    def __init__(self, max_step_times: int = 100):
+        """Initialize the callback.
+
+        Args:
+            max_step_times: The maximum number of step times to store for the final mean step time calculation.
+        """
+        self.step_times = deque(maxlen=max_step_times)
+        self.tokens_seen = deque(maxlen=max_step_times)
 
     def on_step_begin(self, args, state, control, **kwargs):
         """Called at the beginning of each training step."""
-        self.step_start_time = time.perf_counter()
+        self.step_times.append(time.perf_counter())
+        self.tokens_seen.append(state.num_input_tokens_seen)
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         """Called when metrics are logged."""
-        if self.step_start_time is not None and logs is not None:
-            current_time = time.perf_counter()
-            step_time = current_time - self.step_start_time
-            logs["train/step_time"] = step_time
+        if len(self.step_times) > 1 and logs is not None:
+            logs["train/step_time"] = self.step_times[-1] - self.step_times[-2]
+            logs["train/tokens_per_step"] = self.tokens_seen[-1] - self.tokens_seen[-2]
+            logs["train/tokens_per_second"] = logs["train/tokens_seen"] / logs["train/step_time"]
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """Called at the end of training."""
+        if len(self.step_times) > 1 and state.is_world_process_zero:
+            logger.info(
+                "Mean step time (last %d steps): %f seconds", len(self.step_times), np.diff(self.step_times).mean()
+            )
+            logger.info(
+                "Mean tokens per second (last %d steps): %.3g",
+                len(self.tokens_seen),
+                (np.diff(self.tokens_seen) / np.diff(self.step_times)).mean(),
+            )

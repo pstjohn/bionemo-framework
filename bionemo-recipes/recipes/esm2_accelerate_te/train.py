@@ -77,7 +77,6 @@ def main(args: DictConfig):
         else:
             logger.info("No checkpoint found, starting from scratch")
         train_result = trainer.train(resume_from_checkpoint=last_checkpoint)
-        logger.info("Training complete. Metrics: %s", train_result.metrics)
         trainer.save_metrics("train", train_result.metrics)
         trainer.save_model(str(Path(training_args.output_dir) / "checkpoint-last"))
 
