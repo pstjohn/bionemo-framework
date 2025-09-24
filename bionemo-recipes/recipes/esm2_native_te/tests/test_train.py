@@ -47,16 +47,29 @@ def distributed_cleanup():
 
     # Try to destroy the process group, but don't fail if it's not available.
     try:
-        dist.destroy_process_group()
-    except AssertionError:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+    except (AssertionError, RuntimeError):
         pass
 
-    # For MFSDP, clear mesh resources to avoid issues re-running in the same process.
+    # Clear ALL mesh resources (for both MFSDP and FSDP2) to avoid issues re-running in the same process.
     _mesh_resources.mesh_stack.clear()
     _mesh_resources.child_to_root_mapping.clear()
     _mesh_resources.root_to_flatten_mapping.clear()
     _mesh_resources.flatten_name_to_root_dims.clear()
     _mesh_resources.mesh_dim_group_options.clear()
+
+    # Clear CUDA cache to prevent memory issues between tests
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+    # Reset CUDA device to ensure clean state
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+        # Reset all accumulated values in CUDA memory stats
+        for device in range(torch.cuda.device_count()):
+            torch.cuda.reset_accumulated_memory_stats(device)
 
 
 def test_sanity_convergence_mfsdp(distributed_cleanup, tmp_path, recipe_path):
@@ -64,7 +77,13 @@ def test_sanity_convergence_mfsdp(distributed_cleanup, tmp_path, recipe_path):
 
     # Run the training script with Hydra configuration overrides
     with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
-        sanity_config = compose(config_name="L0_sanity", overrides=[f"+wandb_init_args.dir={tmp_path}"])
+        sanity_config = compose(
+            config_name="L0_sanity",
+            overrides=[
+                f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
+            ],
+        )
 
     final_loss = main_mfsdp(sanity_config)
     assert final_loss < 3.0, f"Final loss {final_loss} is too high"
@@ -79,6 +98,7 @@ def test_sanity_convergence_mfsdp_meta_device(distributed_cleanup, tmp_path, rec
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "use_meta_device=true",
             ],
         )
@@ -97,6 +117,7 @@ def test_sanity_convergence_mfsdp_eager_meta_device(distributed_cleanup, tmp_pat
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "model_tag=facebook/esm2_t6_8M_UR50D",
                 "use_meta_device=true",
             ],
@@ -111,7 +132,13 @@ def test_sanity_convergence_ddp(distributed_cleanup, tmp_path, recipe_path):
 
     # Run the training script with Hydra configuration overrides
     with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
-        sanity_config = compose(config_name="L0_sanity", overrides=[f"+wandb_init_args.dir={tmp_path}"])
+        sanity_config = compose(
+            config_name="L0_sanity",
+            overrides=[
+                f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
+            ],
+        )
 
     final_loss = main_ddp(sanity_config)
     assert final_loss < 3.0, f"Final loss {final_loss} is too high"
@@ -126,6 +153,7 @@ def test_sanity_convergence_ddp_non_streaming_dataset(distributed_cleanup, tmp_p
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.load_dataset_kwargs.streaming=False",
             ],
         )
@@ -143,6 +171,7 @@ def test_sanity_convergence_fsdp2(distributed_cleanup, tmp_path, recipe_path):
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
             ],
         )
 
@@ -159,6 +188,7 @@ def test_sanity_mfsdp_fp8(distributed_cleanup, tmp_path, recipe_path):
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 "fp8_config.enabled=true",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "num_train_steps=4",
             ],
         )
@@ -174,6 +204,7 @@ def test_sanity_ddp_fp8(distributed_cleanup, tmp_path, recipe_path):
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "fp8_config.enabled=true",
                 "num_train_steps=4",
             ],
@@ -191,6 +222,7 @@ def test_sanity_convergence_fsdp2_fp8(distributed_cleanup, tmp_path, recipe_path
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 "fp8_config.enabled=true",
+                f"checkpoint.ckpt_dir={tmp_path}",
             ],
         )
 
@@ -210,6 +242,7 @@ def test_sanity_convergence_fsdp2_thd(distributed_cleanup, tmp_path, monkeypatch
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.use_sequence_packing=true",
             ],
         )
@@ -231,6 +264,7 @@ def test_sanity_convergence_fsdp2_thd_fp8(distributed_cleanup, tmp_path, monkeyp
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.use_sequence_packing=true",
                 "dataset.sequence_packing_pad_to_multiple_of=16",
                 "fp8_config.enabled=true",
@@ -253,6 +287,7 @@ def test_sanity_ddp_thd(distributed_cleanup, tmp_path, monkeypatch, recipe_path)
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.use_sequence_packing=true",
                 "num_train_steps=4",
             ],
@@ -273,6 +308,7 @@ def test_sanity_mfsdp_thd(distributed_cleanup, tmp_path, monkeypatch, recipe_pat
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.use_sequence_packing=true",
                 "num_train_steps=4",
             ],
@@ -298,6 +334,7 @@ def test_sanity_ddp_thd_fp8(distributed_cleanup, tmp_path, monkeypatch, recipe_p
                 "num_train_steps=4",
                 "fp8_config.enabled=true",
                 "dataset.sequence_packing_pad_to_multiple_of=16",
+                "checkpoint.resume_from_checkpoint=false",
             ],
         )
 
@@ -352,7 +389,10 @@ def test_sanity_convergence_mfsdp_eager(distributed_cleanup, tmp_path, recipe_pa
     with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
         sanity_config = compose(
             config_name="L0_sanity",
-            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_tag=facebook/esm2_t6_8M_UR50D"],
+            overrides=[
+                f"+wandb_init_args.dir={tmp_path}",
+                "model_tag=facebook/esm2_t6_8M_UR50D",
+            ],
         )
 
     final_loss = main_mfsdp(sanity_config)
@@ -366,7 +406,12 @@ def test_sanity_convergence_ddp_eager(distributed_cleanup, tmp_path, recipe_path
     with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
         sanity_config = compose(
             config_name="L0_sanity",
-            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_tag=facebook/esm2_t6_8M_UR50D"],
+            overrides=[
+                f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
+                "model_tag=facebook/esm2_t6_8M_UR50D",
+                "checkpoint.resume_from_checkpoint=false",
+            ],
         )
 
     final_loss = main_ddp(sanity_config)
@@ -380,7 +425,12 @@ def test_sanity_convergence_fsdp2_eager(distributed_cleanup, tmp_path, recipe_pa
     with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
         sanity_config = compose(
             config_name="L0_sanity",
-            overrides=[f"+wandb_init_args.dir={tmp_path}", "model_tag=facebook/esm2_t6_8M_UR50D"],
+            overrides=[
+                f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
+                "model_tag=facebook/esm2_t6_8M_UR50D",
+                "checkpoint.resume_from_checkpoint=false",
+            ],
         )
 
     final_loss = main_fsdp2(sanity_config)
@@ -397,8 +447,10 @@ def test_sanity_convergence_fsdp2_eager_meta_device(distributed_cleanup, tmp_pat
             config_name="L0_sanity",
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
                 "model_tag=facebook/esm2_t6_8M_UR50D",
                 "use_meta_device=true",
+                "checkpoint.resume_from_checkpoint=false",
             ],
         )
 
