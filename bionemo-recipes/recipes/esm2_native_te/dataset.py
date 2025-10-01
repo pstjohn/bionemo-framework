@@ -68,6 +68,8 @@ def create_dataloader(
     Returns:
         A dataloader that just infinitely loops over the dataset.
     """
+    # Load the dataset given args provided in the hydra config. For example,
+    # `load_dataset("nvidia/esm2_uniref_pretraining_data", split="train", streaming=True)`
     dataset = datasets.load_dataset(**load_dataset_kwargs)
 
     if isinstance(dataset, datasets.IterableDataset):
