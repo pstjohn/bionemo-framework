@@ -13,7 +13,7 @@ dataset:
   num_workers: 1
   max_seq_length: 1024
   use_sequence_packing: false
-  sequence_packing_pad_to_multiple_of: null
+  sequence_packing_pad_to_multiple_of: null  # Should be 16 for FP8, 32 for MXFP8.
   load_dataset_kwargs:
     path: "parquet"
     split: "train"
