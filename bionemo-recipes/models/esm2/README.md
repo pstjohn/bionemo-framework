@@ -94,6 +94,7 @@ This loads the pre-trained ESM2 model that will serve as our reference for compa
 
 ```python
 from esm.convert import convert_esm_te_to_hf
+from esm.modeling_esm_te import NVEsmForMaskedLM
 
 te_model = NVEsmForMaskedLM.from_pretrained("/path/to/te_checkpoint")
 hf_model = convert_esm_te_to_hf(te_model)
@@ -107,7 +108,7 @@ Load the exported model and perform validation:
 ```python
 from transformers import AutoTokenizer
 
-model_hf_exported = AutoModelForMaskedLM.from_pretrained(str(hf_export_path))
+model_hf_exported = AutoModelForMaskedLM.from_pretrained("/path/to/hf_checkpoint")
 tokenizer = AutoTokenizer.from_pretrained("facebook/esm2_t6_8M_UR50D")
 ```
 
