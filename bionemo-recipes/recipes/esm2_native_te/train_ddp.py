@@ -90,7 +90,7 @@ def main(args: DictConfig) -> float | None:
         fp8_recipe = None
 
     # Create a dataloader that just infinitely loops over the dataset.
-    train_iterator = create_dataloader(dist_config, **args.dataset)
+    dataloader, dataset_or_sampler = create_dataloader(dist_config, **args.dataset)
 
     if args.use_torch_compile:
         # If we're using torch.compile, we need to do this before loading the checkpoint to ensure key consistency.
@@ -99,67 +99,76 @@ def main(args: DictConfig) -> float | None:
     # If we're resuming from a checkpoint, load it and set the start step. Otherwise, start from step 0.
     ckpt_path = Path(args.checkpoint.ckpt_dir) / "train_ddp" if args.checkpoint.ckpt_dir else None
     if args.checkpoint.resume_from_checkpoint and ckpt_path:
-        model, optimizer, scheduler, start_step = load_checkpoint_ddp(
+        model, optimizer, scheduler, step, epoch = load_checkpoint_ddp(
             model=model,
             optimizer=optimizer,
             scheduler=scheduler,
             ckpt_path=ckpt_path,
             dist_config=dist_config,
+            dataloader=dataloader,
         )
     else:
-        start_step = 0
+        step = 0
+        epoch = 0
 
     perf_logger = PerfLogger(dist_config, args)
 
     # Training loop.
     model.train()
-    for step in range(start_step, args.num_train_steps):
-        # Get batch.
-        batch = next(train_iterator)
-        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+    while step < args.num_train_steps:
+        for batch in dataloader:
+            # Get batch.
+            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
-        # Forward pass with mixed precision.
-        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            # Forward pass with mixed precision.
             with transformer_engine.pytorch.fp8_autocast(enabled=args.fp8_config.enabled, fp8_recipe=fp8_recipe):
                 outputs = model(**batch)
 
-        # Backward pass.
-        loss = outputs.loss
-        loss.backward()
+            # Backward pass.
+            loss = outputs.loss
+            loss.backward()
 
-        # Compute and clip gradient norms.
-        total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0).item()
+            # Compute and clip gradient norms.
+            total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0).item()
 
-        # Step optimizer.
-        optimizer.step()
-        scheduler.step()
-        optimizer.zero_grad()
+            # Step optimizer.
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
 
-        if ckpt_path and should_save_checkpoint(step, args.checkpoint.save_every_n_steps):
-            save_checkpoint_ddp(
-                model=model,
-                optimizer=optimizer,
-                scheduler=scheduler,
-                ckpt_path=ckpt_path,
+            if ckpt_path and should_save_checkpoint(step, args.checkpoint.save_every_n_steps):
+                save_checkpoint_ddp(
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    ckpt_path=ckpt_path,
+                    step=step,
+                    dist_config=dist_config,
+                    dataloader=dataloader,
+                )
+
+            perf_logger.log_step(
                 step=step,
-                dist_config=dist_config,
+                batch=batch,
+                outputs=outputs,
+                grad_norm=total_norm,
+                lr=optimizer.param_groups[0]["lr"],
             )
 
-        perf_logger.log_step(
-            step=step,
-            batch=batch,
-            outputs=outputs,
-            grad_norm=total_norm,
-            lr=optimizer.param_groups[0]["lr"],
-        )
+            step += 1
+            if step >= args.num_train_steps:
+                break
 
-    # Save final model using save_pretrained
-    if args.checkpoint.save_final_model and ckpt_path:
-        save_final_model_ddp(
-            model=model,
-            save_directory=ckpt_path / "final_model",
-            dist_config=dist_config,
-        )
+        epoch += 1
+        dataset_or_sampler.set_epoch(epoch)  # Update epoch for proper shuffling
+
+        # Save final model using save_pretrained
+        if args.checkpoint.save_final_model and ckpt_path:
+            save_final_model_ddp(
+                model=model,
+                save_directory=ckpt_path / "final_model",
+                dist_config=dist_config,
+            )
 
     # Clean up distributed training
     perf_logger.finish()

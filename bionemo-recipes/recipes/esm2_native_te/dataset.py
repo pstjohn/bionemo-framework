@@ -142,7 +142,6 @@ def create_dataloader(
         persistent_workers=True,
     )
 
-    # Create the infinite iterator
-    train_iterator = infinite_dataloader(train_dataloader, dataset if sampler is None else sampler)
-
-    return train_iterator
+    # The second argument here is what we call `set_epoch` on each epoch. For IterableDataset, we return the dataset
+    # itself, while for map-style datasets, we return the sampler.
+    return train_dataloader, dataset if sampler is None else sampler
