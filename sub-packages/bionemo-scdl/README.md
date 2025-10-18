@@ -101,7 +101,7 @@ import numpy as np
 ds = SingleCellMemMapDataset("97e_scmm")
 index = 0
 values, feature_ids = ds.get_row(
-    index, return_features=True, feature_vars=["feature_id"]
+    index, return_var_features=True, var_feature_names=["feature_id"]
 )
 assert (
     len(feature_ids) == 1
@@ -138,11 +138,11 @@ for e in range(n_epochs):
         model(batch)
 ```
 
-For some applications, we might want to also use the features. These can be specified with get_row(index, return_features = True). By default, all features are returned, but the features can be specified with the feature_vars argument in get_row, which corresponds to a list of the feature names to return.
+For some applications, we might want to also use the features. These can be specified with get_row(index, return_var_features = True). By default, all features are returned, but the features can be specified with the var_feature_names argument in get_row, which corresponds to a list of the feature names to return.
 
-```
+```python
 for index in range(len(data)):
-    model(data.get_row(index,return_features = True))
+    model(data.get_row(index, return_var_features=True))
 ```
 
 ## Examples
