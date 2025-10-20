@@ -27,6 +27,10 @@ bionemo-framework repository. You can download a zipped directory of this folder
 \[1\]: Requires [compute capability](https://developer.nvidia.com/cuda-gpus) 9.0 and above (Hopper+) <br/>
 \[2\]: Requires [compute capability](https://developer.nvidia.com/cuda-gpus) 10.0 and 10.3 (Blackwell), 12.0 support pending <br/>
 
+### Performance Benchmarks
+
+![Performance Benchmarks](../../../docs/docs/assets/images/esm2/esm2_native_te_benchmarks.svg)
+
 ### Distributed Training
 
 This recipe supports distributed training using DDP, FSDP2, and Megatron-FSDP, shown in three separate training

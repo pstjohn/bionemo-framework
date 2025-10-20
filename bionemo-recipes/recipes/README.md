@@ -27,7 +27,7 @@ Each recipe is a completely isolated environment:
 - **Everything needed** to run training is included in the recipe directory
 - **Pinned dependencies** for reproducible results. Eventually we will use a uv lockfile to make automated package updates easier.
 
-### KISS over DRY
+### KISS (Keep It Simple) over DRY (Don't Repeat Yourself)
 
 Prioritize **readability and educational value** over code reuse:
 
