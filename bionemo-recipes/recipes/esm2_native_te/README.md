@@ -27,6 +27,10 @@ bionemo-framework repository. You can download a zipped directory of this folder
 \[1\]: Requires [compute capability](https://developer.nvidia.com/cuda-gpus) 9.0 and above (Hopper+) <br/>
 \[2\]: Requires [compute capability](https://developer.nvidia.com/cuda-gpus) 10.0 and 10.3 (Blackwell), 12.0 support pending <br/>
 
+### Performance Benchmarks
+
+![Performance Benchmarks](../../../docs/docs/assets/images/esm2/esm2_native_te_benchmarks.svg)
+
 ### Distributed Training
 
 This recipe supports distributed training using DDP, FSDP2, and Megatron-FSDP, shown in three separate training
@@ -117,16 +121,23 @@ directory within the checkpoint directory.
 
 Checkpointing is implemented for all three strategies, see [`checkpoint.py`](checkpoint.py) for more details.
 
-## Stateful dataloading
+## Saving Dataloader State with `StatefulDataLoader`
 
-We now offer the ability to resume your dataloader exactly where it left off.
+These examples show how to save and resume your dataloader by passing the dataloader instance to our `save_checkpoint_*`
+and `load_checkpoint_*` functions using the `StatefulDataLoader` class from `torchdata`. See `checkpoint.py` for
+implementation details.
+
+For references on `StatefulDataLoader` and it's integration with `datasets` see:
+
+- https://github.com/meta-pytorch/data/tree/main/torchdata/stateful_dataloader
+- https://huggingface.co/docs/datasets/en/stream#save-a-dataset-checkpoint-and-resume-iteration
 
 Known limitations:
 
-- When loading the dataloader from a saved checkpoint, you must provide the same `num_workers` that you used to save the dataloader state, because state is saved at the worker-level.
-- Moreover, dataloader state is saved on a per-rank basis. So if you resume training and load the dataloaders with a different amount of nodes / gpus that was used when you saved the dataloader the state will not resume perfectly.
-
-For references on Stateful Dataloaders please see [hf](https://huggingface.co/docs/datasets/en/stream#save-a-dataset-checkpoint-and-resume-iteration) and [example][https://github.com/meta-pytorch/data/tree/main/torchdata/stateful_dataloader]
+- When loading the dataloader from a saved checkpoint, you must provide the same `num_workers` that you used to save the
+  dataloader state, because state is saved at the worker-level.
+- Moreover, dataloader state is saved on a per-rank basis. So if you resume training and load the dataloader with a
+  different amount of nodes / gpus that was used when you saved the dataloader the state will not resume perfectly.
 
 ## Running Inference with the Trained Model
 

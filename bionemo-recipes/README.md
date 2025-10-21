@@ -123,7 +123,8 @@ ______________________________________________________________________
 
 We prioritize **readability and simplicity** over comprehensive feature coverage:
 
-- **KISS over DRY**: It's better to have clear, duplicated code than complex abstractions
+- **KISS (Keep It Simple) over DRY (Don't Repeat Yourself)**: It's better to have clear, duplicated code than complex
+  abstractions
 - **One thing well**: Each recipe should demonstrate specific features clearly rather than trying to cover everything
 - **Self-contained**: Recipes cannot depend on cutting-edge code from other parts of the repository
 
