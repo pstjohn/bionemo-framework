@@ -23,7 +23,7 @@
 Adapted from `modeling_esm.py` in huggingface/transformers.
 """
 
-from typing import Literal, Optional
+from typing import Literal, Optional, Unpack
 
 # TODO: put import guard around transformer_engine here, with an informative error message around
 # installation and the nvidia docker container.
@@ -42,6 +42,7 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.models.esm.configuration_esm import EsmConfig
 from transformers.models.esm.modeling_esm import EsmPooler
 from transformers.utils import logging
+from transformers.utils.generic import TransformersKwargs
 
 
 logger = logging.get_logger(__name__)
@@ -245,6 +246,7 @@ class NVEsmPreTrainedModel(PreTrainedModel):
     config_class = NVEsmConfig
     base_model_prefix = "esm"
     supports_gradient_checkpointing = False
+    accepts_loss_kwargs = False
     _no_split_modules = (
         "TransformerLayer",
         "EsmEmbeddings",
@@ -327,11 +329,7 @@ class NVEsmModel(NVEsmPreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
-        output_hidden_states: Optional[bool] = None,
-        cu_seq_lens_q: torch.IntTensor | None = None,
-        cu_seq_lens_k: torch.IntTensor | None = None,
-        max_length_q: int | None = None,
-        max_length_k: int | None = None,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPooling:
         """Forward pass of the NVEsmModel.
 
@@ -340,19 +338,11 @@ class NVEsmModel(NVEsmPreTrainedModel):
             attention_mask (torch.Tensor): The attention mask.
             position_ids (torch.Tensor): The position ids.
             inputs_embeds (torch.Tensor): The input embeddings.
-            output_hidden_states (bool): Whether to output the hidden states.
-            cu_seq_lens_q (torch.IntTensor): The cumulative sequence lengths for the query state, if using THD inputs.
-            cu_seq_lens_k (torch.IntTensor): The cumulative sequence lengths for the key state, if using THD inputs.
-            max_length_q (int): The maximum length for the query state, if using THD inputs.
-            max_length_k (int): The maximum length for the key state, if using THD inputs.
+            **kwargs: Additional arguments, see TransformersKwargs for more details.
 
         Returns:
             BaseModelOutputWithPooling: The output of the model.
         """
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
@@ -380,19 +370,12 @@ class NVEsmModel(NVEsmPreTrainedModel):
             input_ids=input_ids,
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
-            cu_seq_lens_q=cu_seq_lens_q,
-            cu_seq_lens_k=cu_seq_lens_k,
-            max_length_q=max_length_q,
-            max_length_k=max_length_k,
+            **kwargs,
         )
         encoder_outputs = self.encoder(
             embedding_output,
             attention_mask=extended_attention_mask,
-            output_hidden_states=output_hidden_states,
-            cu_seq_lens_q=cu_seq_lens_q,
-            cu_seq_lens_k=cu_seq_lens_k,
-            max_length_q=max_length_q,
-            max_length_k=max_length_k,
+            **kwargs,
         )
         sequence_output = encoder_outputs[0]
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
@@ -444,11 +427,7 @@ class NVEsmForMaskedLM(NVEsmPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        output_hidden_states: Optional[bool] = None,
-        cu_seq_lens_q: torch.IntTensor | None = None,
-        cu_seq_lens_k: torch.IntTensor | None = None,
-        max_length_q: int | None = None,
-        max_length_k: int | None = None,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> MaskedLMOutput:
         """Forward pass of the NVEsmForMaskedLM.
 
@@ -458,11 +437,7 @@ class NVEsmForMaskedLM(NVEsmPreTrainedModel):
             position_ids (torch.LongTensor): The position ids.
             inputs_embeds (torch.FloatTensor): The input embeddings.
             labels (torch.LongTensor): The labels.
-            output_hidden_states (bool): Whether to output the hidden states.
-            cu_seq_lens_q (torch.IntTensor): The cumulative sequence lengths for the query state, if using THD inputs.
-            cu_seq_lens_k (torch.IntTensor): The cumulative sequence lengths for the key state, if using THD inputs.
-            max_length_q (int): The maximum length for the query state, if using THD inputs.
-            max_length_k (int): The maximum length for the key state, if using THD inputs.
+            **kwargs: Additional arguments, see TransformersKwargs for more details.
 
         Returns:
             MaskedLMOutput: The output of the model.
@@ -472,11 +447,7 @@ class NVEsmForMaskedLM(NVEsmPreTrainedModel):
             attention_mask=attention_mask,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_hidden_states=output_hidden_states,
-            cu_seq_lens_q=cu_seq_lens_q,
-            cu_seq_lens_k=cu_seq_lens_k,
-            max_length_q=max_length_q,
-            max_length_k=max_length_k,
+            **kwargs,
         )
         sequence_output = outputs[0]
         prediction_scores = self.lm_head(sequence_output)
@@ -571,10 +542,7 @@ class NVEsmEmbeddings(nn.Module):
         input_ids=None,
         attention_mask=None,
         inputs_embeds=None,
-        cu_seq_lens_q: torch.IntTensor | None = None,
-        cu_seq_lens_k: torch.IntTensor | None = None,
-        max_length_q: int | None = None,
-        max_length_k: int | None = None,
+        **kwargs: Unpack[TransformersKwargs],
     ):
         """Forward pass of the NVEsmEmbeddings."""
         if inputs_embeds is None:
@@ -584,7 +552,12 @@ class NVEsmEmbeddings(nn.Module):
         # embedding_scale factor here.
         embeddings = inputs_embeds
 
-        if all(x is not None for x in [cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k]):
+        if (
+            kwargs.get("cu_seq_lens_q") is not None
+            and kwargs.get("cu_seq_lens_k") is not None
+            and kwargs.get("max_length_q") is not None
+            and kwargs.get("max_length_k") is not None
+        ):
             using_thd = True
             attention_mask = None
         else:
@@ -610,10 +583,12 @@ class NVEsmEmbeddings(nn.Module):
                 embeddings = (embeddings * scale_factor[:, None, None]).to(embeddings.dtype)
 
             else:
-                src_lengths = torch.diff(cu_seq_lens_q)
+                src_lengths = torch.diff(kwargs["cu_seq_lens_q"])
                 # We need to find the number of masked tokens in each sequence in the padded batch.
                 is_masked = (input_ids == self.mask_token_id).squeeze(0)
-                n_masked_per_seq = torch.nested.nested_tensor_from_jagged(is_masked, offsets=cu_seq_lens_q).sum(1)
+                n_masked_per_seq = torch.nested.nested_tensor_from_jagged(
+                    is_masked, offsets=kwargs["cu_seq_lens_q"]
+                ).sum(1)
                 mask_ratio_observed = n_masked_per_seq.float() / src_lengths
                 scale_factor = (1 - mask_ratio_train) / (1 - mask_ratio_observed)
                 reshaped_scale_factor = torch.repeat_interleave(scale_factor, src_lengths, dim=0)
@@ -653,11 +628,7 @@ class NVEsmForTokenClassification(NVEsmPreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
-        output_hidden_states: Optional[bool] = None,
-        cu_seq_lens_q: torch.IntTensor | None = None,
-        cu_seq_lens_k: torch.IntTensor | None = None,
-        max_length_q: int | None = None,
-        max_length_k: int | None = None,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> TokenClassifierOutput:
         """Forward pass for the token classification head.
 
@@ -669,11 +640,7 @@ class NVEsmForTokenClassification(NVEsmPreTrainedModel):
             attention_mask=attention_mask,
             position_ids=position_ids,
             inputs_embeds=inputs_embeds,
-            output_hidden_states=output_hidden_states,
-            cu_seq_lens_q=cu_seq_lens_q,
-            cu_seq_lens_k=cu_seq_lens_k,
-            max_length_q=max_length_q,
-            max_length_k=max_length_k,
+            **kwargs,
         )
 
         sequence_output = outputs[0]

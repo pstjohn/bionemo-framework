@@ -35,13 +35,39 @@ tokenizer_args = {
     "return_offsets_mapping": True,
 }
 
+ss_token_map = {"H": 0, "E": 1, "I": 2, "S": 3, "T": 4, "C": 5, "B": 6, "G": 7, "~": -100}
+
 
 def tokenize(example):
     """Tokenize both the input protein sequence and the secondary structure labels."""
     result = tokenizer(example["Sequence"], **tokenizer_args)
-    breakpoint()
-    # result["labels"] = [[ii if ii != 8 else -100 for ii in item] for item in tokenized_labels]
-    return result
+
+    # While we can use the rust-based tokenizer for the protein sequence, we manually encode the secondary structure
+    # labels. Our goal is to return a list of integer labels with the same shape as the input_ids.
+    labels = []
+    for batch_idx in range(len(result["input_ids"])):
+        sequence_labels = []
+
+        # This array maps the possibly-chunked result["input_ids"] to the original sequence. Because of
+        # `return_overflowing_tokens`, each input sequence may be split into multiple input rows.
+        offsets = result["offset_mapping"][batch_idx]
+
+        # This gets the original secondary structure sequence for the current chunk.
+        ss_sequence = example["Secondary_structure"][result["overflow_to_sample_mapping"][batch_idx]]
+
+        for offset_start, offset_end in offsets:
+            if offset_start == offset_end:
+                sequence_labels.append(-100)  # Start and end of the sequence tokens can be ignored.
+            elif offset_end == offset_start + 1:  # All tokens are single-character.
+                ss_char = ss_sequence[offset_start]
+                ss_label_value = ss_token_map[ss_char]  # Encode the secondary structure character
+                sequence_labels.append(ss_label_value)
+            else:
+                raise ValueError(f"Invalid offset: {offset_start} {offset_end}")
+
+        labels.append(sequence_labels)
+
+    return {"input_ids": result["input_ids"], "labels": labels}
 
 
 tokenized_dataset = ss_dataset.map(
@@ -70,15 +96,15 @@ peft_config = peft.LoraConfig(
 
 peft_model = peft.get_peft_model(model, peft_config)
 
-model.to("cuda")
+peft_model.to("cuda")
 
 # Create optimizer.
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+optimizer = torch.optim.AdamW(peft_model.parameters(), lr=1e-4, weight_decay=0.01)
 
 with tqdm(dataloader, desc="Training") as progress_bar:
     for batch in progress_bar:
         batch = {k: v.to("cuda") for k, v in batch.items()}  # noqa PLW2901
-        output = model(**batch)
+        output = peft_model(**batch)
         loss = output.loss
         loss.backward()
         progress_bar.set_postfix({"loss": loss.item()})
