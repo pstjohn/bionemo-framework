@@ -29,6 +29,7 @@ import torch
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import (
+    AutoConfig,
     AutoModelForTokenClassification,
     AutoTokenizer,
     DataCollatorForTokenClassification,
@@ -107,9 +108,15 @@ def train_lora(dataloader: torch.utils.data.DataLoader) -> float:
     Returns:
         Final loss value.
     """
-    model = AutoModelForTokenClassification.from_pretrained(
-        "example_8m_checkpoint", num_labels=8, trust_remote_code=True, dtype="bfloat16"
-    )
+    # For testing, we don't want to depend on loading pre-trained weights.
+    config = AutoConfig.from_pretrained("example_8m_checkpoint", trust_remote_code=True)
+    config.num_labels = 8
+    model = AutoModelForTokenClassification.from_config(config, trust_remote_code=True)
+
+    # Alternatively, we'd want to load an actual pre-trained checkpoint.
+    # model = AutoModelForTokenClassification.from_pretrained(
+    #     "example_8m_checkpoint", num_labels=8, trust_remote_code=True, dtype="bfloat16"
+    # )
 
     peft_config = peft.LoraConfig(
         task_type=peft.TaskType.TOKEN_CLS,
@@ -122,7 +129,7 @@ def train_lora(dataloader: torch.utils.data.DataLoader) -> float:
     )
 
     peft_model = peft.get_peft_model(model, peft_config)
-    peft_model.to("cuda")
+    peft_model.to("cuda", dtype=torch.bfloat16)
 
     # Create optimizer.
     optimizer = torch.optim.AdamW(peft_model.parameters(), lr=1e-3, weight_decay=0.01)

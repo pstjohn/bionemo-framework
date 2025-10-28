@@ -617,7 +617,9 @@ class NVEsmForTokenClassification(NVEsmPreTrainedModel):
 
         self.esm = NVEsmModel(config, add_pooling_layer=False)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.classifier = transformer_engine.pytorch.Linear(config.hidden_size, config.num_labels)
+        self.classifier = transformer_engine.pytorch.Linear(
+            config.hidden_size, config.num_labels, params_dtype=config.dtype
+        )
 
         self.init_weights()
         self.post_init()
