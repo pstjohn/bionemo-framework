@@ -17,7 +17,23 @@ import torch
 import torch.nn as nn
 from nemo.lightning import io
 
-from modeling_llama_te import NVLlamaConfig, NVLlamaForMaskedLM
+from modeling_llama_te import NVLlamaConfig, NVLlamaModel
+
+
+mapping = {
+    "model.embed_tokens.weight": "model.embed_tokens.weight",
+    "model.layers.*.input_layernorm.weight": "model.layers.*.self_attention.layernorm_qkv.layer_norm_weight",
+    "model.layers.*.self_attn.q_proj.weight": "model.layers.*.self_attention.layernorm_qkv.query_weight",
+    "model.layers.*.self_attn.k_proj.weight": "model.layers.*.self_attention.layernorm_qkv.key_weight",
+    "model.layers.*.self_attn.v_proj.weight": "model.layers.*.self_attention.layernorm_qkv.value_weight",
+    "model.layers.*.self_attn.o_proj.weight": "model.layers.*.self_attention.proj.weight",
+    "model.layers.*.post_attention_layernorm.weight": "model.layers.*.self_attention.layernorm_mlp.layer_norm_weight",
+    "model.layers.*.mlp.gate_proj.weight": "model.layers.*.self_attention.layernorm_mlp.fc1_weight",
+    "model.layers.*.mlp.up_proj.weight": "model.layers.*.self_attention.layernorm_mlp.fc1_weight",
+    "model.layers.*.mlp.down_proj.weight": "model.layers.*.self_attention.layernorm_mlp.fc2_weight",
+    "model.norm.weight": "model.norm.weight",
+    "lm_head.weight": "lm_head.weight",
+}
 
 
 def convert_llama_hf_to_te(model_hf: nn.Module, **config_kwargs) -> nn.Module:
@@ -33,14 +49,13 @@ def convert_llama_hf_to_te(model_hf: nn.Module, **config_kwargs) -> nn.Module:
     # TODO (peter): this is super similar method to the AMPLIFY one, maybe we can abstract or keep simlar naming? models/amplify/src/amplify/state_dict_convert.py:convert_amplify_hf_to_te
     te_config = NVLlamaConfig(**model_hf.config.to_dict(), **config_kwargs)
     with torch.device("meta"):
-        model_te = NVLlamaForMaskedLM(te_config)
+        model_te = NVLlamaModel(te_config)
 
     output_model = io.apply_transforms(
         model_hf,
         model_te,
         mapping,
         [_pack_qkv_weight, _pack_qkv_bias],
-        state_dict_ignored_entries=["lm_head.decoder.weight"],
     )
 
     output_model.tie_weights()
