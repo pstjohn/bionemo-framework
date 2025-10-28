@@ -1,0 +1,4 @@
+transformer_engine[pytorch]
+nemo_toolkit[lightning]
+transformers
+torch
