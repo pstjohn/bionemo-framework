@@ -170,27 +170,29 @@ class NVEsmEncoder(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        output_hidden_states: bool = False,
-        cu_seq_lens_q: torch.IntTensor | None = None,
-        cu_seq_lens_k: torch.IntTensor | None = None,
-        max_length_q: int | None = None,
-        max_length_k: int | None = None,
+        **kwargs: Unpack[TransformersKwargs],
     ):
         """Forward pass of the NVEsmEncoder.
 
         Args:
             hidden_states (torch.Tensor): The hidden states.
             attention_mask (torch.Tensor): The attention mask.
-            output_hidden_states (bool): Whether to output the hidden states.
-            cu_seq_lens_q (torch.IntTensor): The cumulative sequence lengths for the query state, if using THD inputs.
-            cu_seq_lens_k (torch.IntTensor): The cumulative sequence lengths for the key state, if using THD inputs.
-            max_length_q (int): The maximum length for the query state, if using THD inputs.
-            max_length_k (int): The maximum length for the key state, if using THD inputs.
+            **kwargs: Additional arguments, see TransformersKwargs for more details.
         """
         all_hidden_states: tuple[torch.Tensor, ...] = ()
 
+        has_thd_input = [
+            x is not None
+            for x in [
+                kwargs.get("cu_seq_lens_q", None),
+                kwargs.get("cu_seq_lens_k", None),
+                kwargs.get("max_length_q", None),
+                kwargs.get("max_length_k", None),
+            ]
+        ]
+
         if self.config.attn_input_format == "thd":
-            if any(x is None for x in [cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k]):
+            if not all(has_thd_input):
                 raise ValueError(
                     "cu_seq_lens_q, cu_seq_lens_k, max_length_q, and max_length_k must be provided when using THD inputs."
                 )
@@ -200,11 +202,10 @@ class NVEsmEncoder(nn.Module):
             hidden_states = hidden_states.squeeze(0)
             attention_mask = None
 
-        elif self.config.attn_input_format == "bshd":
-            if any(x is not None for x in [cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k]):
-                raise ValueError(
-                    "cu_seq_lens_q, cu_seq_lens_k, max_length_q, and max_length_k are not allowed when using BSHD inputs."
-                )
+        elif self.config.attn_input_format == "bshd" and any(has_thd_input):
+            raise ValueError(
+                "cu_seq_lens_q, cu_seq_lens_k, max_length_q, and max_length_k are not allowed when using BSHD inputs."
+            )
 
         # Ensure that rotary embeddings are computed with at a higher precision outside the torch autocast context.
         with torch.autocast(device_type="cuda", enabled=False):
@@ -212,26 +213,26 @@ class NVEsmEncoder(nn.Module):
                 if self.config.attn_input_format == "bshd":
                     te_rope_emb = self.rotary_embeddings(max_seq_len=hidden_states.shape[1])
                 elif self.config.attn_input_format == "thd":
-                    te_rope_emb = self.rotary_embeddings(max_seq_len=cu_seq_lens_q[-1])
+                    te_rope_emb = self.rotary_embeddings(max_seq_len=kwargs["cu_seq_lens_q"][-1])
             te_rope_emb = te_rope_emb.to(hidden_states.device, dtype=hidden_states.dtype, non_blocking=True)
 
         for layer_module in self.layers:
-            if output_hidden_states:
+            if kwargs.get("output_hidden_states", False):
                 all_hidden_states = (*all_hidden_states, hidden_states)
 
             hidden_states = layer_module(
                 hidden_states,
                 attention_mask,
                 rotary_pos_emb=te_rope_emb,
-                cu_seqlens_q=cu_seq_lens_q,
-                cu_seqlens_kv=cu_seq_lens_k,
-                max_seqlen_q=max_length_q,
-                max_seqlen_kv=max_length_k,
+                cu_seqlens_q=kwargs.get("cu_seq_lens_q", None),
+                cu_seqlens_kv=kwargs.get("cu_seq_lens_k", None),
+                max_seqlen_q=kwargs.get("max_length_q", None),
+                max_seqlen_kv=kwargs.get("max_length_k", None),
             )
 
         hidden_states = self.emb_layer_norm_after(hidden_states)
 
-        if output_hidden_states:
+        if kwargs.get("output_hidden_states", False):
             all_hidden_states = (*all_hidden_states, hidden_states)
 
         return BaseModelOutput(

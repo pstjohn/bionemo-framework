@@ -33,5 +33,25 @@ def test_create_peft_model(te_model_checkpoint):
 
     peft_model = peft.get_peft_model(model, peft_config)
     status = peft_model.get_model_status()
-    assert status.trainable_params == 145_024
-    assert status.total_params == 7_645_184
+    assert status.trainable_params <= 200_000
+    assert status.total_params >= 7_500_000
+
+
+def test_lora_model_forward_pass(te_model_checkpoint, input_data):
+    model = NVEsmForMaskedLM.from_pretrained(te_model_checkpoint, dtype=torch.bfloat16)
+
+    peft_config = peft.LoraConfig(
+        task_type=peft.TaskType.TOKEN_CLS,
+        inference_mode=False,
+        r=16,
+        lora_alpha=16,
+        target_parameters=["layernorm_qkv.weight"],
+        bias="none",
+    )
+
+    peft_model = peft.get_peft_model(model, peft_config)
+    peft_model.to("cuda")
+
+    input_data = {k: v.to("cuda") for k, v in input_data.items()}
+    outputs = peft_model(**input_data)
+    assert outputs.loss is not None

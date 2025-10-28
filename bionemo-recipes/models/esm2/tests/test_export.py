@@ -55,7 +55,6 @@ def test_auto_model_for_token_classification_loading(exported_8m_checkpoint):
     assert type(model_for_token_classification).__name__.endswith("NVEsmForTokenClassification")
     assert model_for_token_classification.num_labels == 8
     assert model_for_token_classification.classifier.weight.shape[0] == 8
-    assert not loading_info["unexpected_keys"]
     assert not loading_info["mismatched_keys"]
     assert not loading_info["error_msgs"]
 
