@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import peft
+import pytest
 import torch
 
 from esm.modeling_esm_te import NVEsmForMaskedLM
@@ -55,3 +56,38 @@ def test_lora_model_forward_pass(te_model_checkpoint, input_data):
     input_data = {k: v.to("cuda") for k, v in input_data.items()}
     outputs = peft_model(**input_data)
     assert outputs.loss is not None
+
+
+@pytest.mark.xfail(reason="BIONEMO-3136: LoRA model initializes with warnings because of TE layers.")
+def test_lora_model_raises_no_warnings(te_model_checkpoint):
+    model = NVEsmForMaskedLM.from_pretrained(te_model_checkpoint, dtype=torch.bfloat16)
+
+    peft_config = peft.LoraConfig(
+        task_type=peft.TaskType.TOKEN_CLS,
+        inference_mode=False,
+        r=16,
+        lora_alpha=16,
+        target_parameters=["layernorm_qkv.weight"],
+        bias="none",
+    )
+
+    with pytest.warns(UserWarning) as record:
+        peft.get_peft_model(model, peft_config)
+
+    assert len(record) == 0
+
+
+@pytest.mark.xfail(reason="BIONEMO-3136: LoRA model initialization fails with target_modules because of TE layers.")
+def test_lora_model_with_target_modules(te_model_checkpoint):
+    model = NVEsmForMaskedLM.from_pretrained(te_model_checkpoint, dtype=torch.bfloat16)
+
+    peft_config = peft.LoraConfig(
+        task_type=peft.TaskType.TOKEN_CLS,
+        inference_mode=False,
+        r=16,
+        lora_alpha=16,
+        target_modules=["layernorm_qkv"],
+        bias="none",
+    )
+
+    peft.get_peft_model(model, peft_config)
