@@ -490,12 +490,12 @@ class TransformFns:
 
         Example: export layer linear_qkv to HF {q|k|v}_proj
         """
-        llama_config = ctx.target.config
+        target_config = ctx.target.config
 
-        head_num = llama_config.num_attention_heads
-        num_query_groups = llama_config.num_key_value_heads
+        head_num = target_config.num_attention_heads
+        num_query_groups = target_config.num_key_value_heads
         heads_per_group = head_num // num_query_groups
-        hidden_size = llama_config.hidden_size
+        hidden_size = target_config.hidden_size
         head_size = hidden_size // head_num
         qkv_total_dim = head_num + 2 * num_query_groups
 
@@ -567,12 +567,12 @@ class TransformFns:
 
         Example: import HF {q|k|v}_proj to layer linear_qkv
         """
-        llama_config = ctx.target.config
+        target_config = ctx.target.config
 
-        head_num = llama_config.num_attention_heads
-        num_query_groups = llama_config.num_key_value_heads
+        head_num = target_config.num_attention_heads
+        num_query_groups = target_config.num_key_value_heads
         heads_per_group = head_num // num_query_groups
-        hidden_size = llama_config.hidden_size
+        hidden_size = target_config.hidden_size
         head_size = hidden_size // head_num
         old_tensor_shape = q.size()
         new_q_tensor_shape = (head_num, head_size, *old_tensor_shape[1:])

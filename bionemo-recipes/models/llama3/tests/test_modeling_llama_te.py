@@ -35,7 +35,7 @@ def input_text():
 
 def test_llama_model_forward_pass(input_text):
     tokenizer = AutoTokenizer.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8")
-    config = NVLlamaConfig.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8")
+    config = NVLlamaConfig.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8", num_hidden_layers=2)
     model = NVLlamaForCausalLM(config)
 
     inputs = tokenizer(input_text, return_tensors="pt")
@@ -75,7 +75,7 @@ def test_llama_model_golden_values(input_text):
 
 def test_llama_model_can_generate():
     tokenizer = AutoTokenizer.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8")
-    config = NVLlamaConfig.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8")
+    config = NVLlamaConfig.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8", num_hidden_layers=2)
     model = NVLlamaForCausalLM(config)
     generator = pipeline("text-generation", model=model, tokenizer=tokenizer, device="cuda")
     generator("Hello, how are you?", max_new_tokens=16)
