@@ -23,8 +23,10 @@ from modeling_llama_te import NVLlamaConfig, NVLlamaForCausalLM
 
 mapping = {
     "model.embed_tokens.weight": "model.embed_tokens.weight",
-    "model.rotary_emb.inv_freq": "model.rotary_emb.inv_freq",
     "model.layers.*.input_layernorm.weight": "model.layers.*.self_attention.layernorm_qkv.layer_norm_weight",
+    "model.layers.*.self_attn.q_proj.weight": "model.layers.*.self_attention.layernorm_qkv.query_weight",
+    "model.layers.*.self_attn.k_proj.weight": "model.layers.*.self_attention.layernorm_qkv.key_weight",
+    "model.layers.*.self_attn.v_proj.weight": "model.layers.*.self_attention.layernorm_qkv.value_weight",
     "model.layers.*.self_attn.o_proj.weight": "model.layers.*.self_attention.proj.weight",
     "model.layers.*.post_attention_layernorm.weight": "model.layers.*.layernorm_mlp.layer_norm_weight",
     "model.layers.*.mlp.down_proj.weight": "model.layers.*.layernorm_mlp.fc2_weight",
@@ -57,15 +59,6 @@ def convert_llama_hf_to_te(model_hf: nn.Module, **config_kwargs) -> nn.Module:
         [
             state.state_transform(
                 source_key=(
-                    "model.layers.*.self_attn.q_proj.weight",
-                    "model.layers.*.self_attn.k_proj.weight",
-                    "model.layers.*.self_attn.v_proj.weight",
-                ),
-                target_key="model.layers.*.self_attention.layernorm_qkv.weight",
-                fn=state.TransformFns.merge_qkv,
-            ),
-            state.state_transform(
-                source_key=(
                     "model.layers.*.mlp.gate_proj.weight",
                     "model.layers.*.mlp.up_proj.weight",
                 ),
@@ -75,6 +68,7 @@ def convert_llama_hf_to_te(model_hf: nn.Module, **config_kwargs) -> nn.Module:
         ],
     )
 
+    output_model.model.rotary_emb.inv_freq = model_hf.model.rotary_emb.inv_freq.clone()
     output_model.tie_weights()
 
     return output_model
@@ -101,15 +95,6 @@ def convert_llama_te_to_hf(model_te: nn.Module, **config_kwargs) -> nn.Module:
         reverse_mapping,
         [
             state.state_transform(
-                source_key="model.layers.*.self_attention.layernorm_qkv.weight",
-                target_key=(
-                    "model.layers.*.self_attn.q_proj.weight",
-                    "model.layers.*.self_attn.k_proj.weight",
-                    "model.layers.*.self_attn.v_proj.weight",
-                ),
-                fn=state.TransformFns.split_qkv,
-            ),
-            state.state_transform(
                 source_key="model.layers.*.layernorm_mlp.fc1_weight",
                 target_key=(
                     "model.layers.*.mlp.gate_proj.weight",
@@ -120,6 +105,7 @@ def convert_llama_te_to_hf(model_te: nn.Module, **config_kwargs) -> nn.Module:
         ],
     )
 
+    output_model.model.rotary_emb.inv_freq = model_te.model.rotary_emb.inv_freq.clone()
     output_model.tie_weights()
 
     return output_model

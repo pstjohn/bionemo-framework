@@ -42,7 +42,7 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx, dtype=config.dtype)
         self.layers = nn.ModuleList(
             [
                 transformer_engine.pytorch.TransformerLayer(
@@ -51,20 +51,23 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
                     num_attention_heads=config.num_attention_heads,
                     bias=False,
                     layernorm_epsilon=config.rms_norm_eps,
+                    fuse_qkv_params=False,
+                    qkv_weight_interleaved=False,
                     hidden_dropout=0,
                     attention_dropout=0,
-                    fuse_qkv_params=True,
-                    qkv_weight_interleaved=True,
                     normalization="RMSNorm",
                     activation="swiglu",
                     attn_input_format="bshd",
                     num_gqa_groups=config.num_key_value_heads,
                     layer_number=layer_idx + 1,
+                    params_dtype=config.dtype,
                 )
                 for layer_idx in range(config.num_hidden_layers)
             ]
         )
-        self.norm = transformer_engine.pytorch.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = transformer_engine.pytorch.RMSNorm(config.hidden_size, eps=config.rms_norm_eps, dtype=config.dtype)
+        # self.rotary_emb = RotaryPositionEmbedding(config.hidden_size // config.num_attention_heads)
+        # self.rotary_emb.inv_freq, _ = ROPE_INIT_FUNCTIONS["llama3"](config, device=None)
         self.rotary_emb = NVLlamaRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
@@ -103,17 +106,17 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = transformers.masking_utils.create_causal_mask(
-            config=self.config,
-            input_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            cache_position=cache_position,
-            past_key_values=past_key_values,
-            position_ids=position_ids,
-        )
+        # causal_mask = transformers.masking_utils.create_causal_mask(
+        #     config=self.config,
+        #     input_embeds=inputs_embeds,
+        #     attention_mask=attention_mask,
+        #     cache_position=cache_position,
+        #     past_key_values=past_key_values,
+        #     position_ids=position_ids,
+        # )
 
         hidden_states = inputs_embeds
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids).transpose(0, 1).unsqueeze(1)
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             if output_hidden_states:
@@ -121,7 +124,8 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
 
             hidden_states = decoder_layer(
                 hidden_states,
-                attention_mask=causal_mask,
+                attention_mask=None,
+                self_attn_mask_type="causal",
                 rotary_pos_emb=position_embeddings,
                 # position_ids=position_ids,
                 # past_key_values=past_key_values,
@@ -149,7 +153,12 @@ class NVLlamaForCausalLM(NVLlamaPreTrainedModel, transformers.GenerationMixin):
         super().__init__(config)
         self.model = NVLlamaModel(config)
         self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = transformer_engine.pytorch.Linear(
+            config.hidden_size,
+            config.vocab_size,
+            bias=False,
+            params_dtype=config.dtype,
+        )
 
         # Initialize weights and apply final processing
         self.post_init()

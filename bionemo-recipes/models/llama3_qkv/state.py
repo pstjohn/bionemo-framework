@@ -27,7 +27,7 @@ from torch import nn
 
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 SourceModuleT = TypeVar("SourceModuleT", bound=nn.Module)
 TargetModuleT = TypeVar("TargetModuleT", bound=nn.Module)
