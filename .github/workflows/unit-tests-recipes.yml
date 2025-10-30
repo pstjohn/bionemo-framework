@@ -135,6 +135,8 @@ jobs:
     container:
       image: ${{ matrix.recipe.image }}
       options: --shm-size=16G
+      env:
+        CI: true
     strategy:
       matrix:
         recipe: ${{ fromJson(needs.changed-dirs.outputs.dirs) }}
