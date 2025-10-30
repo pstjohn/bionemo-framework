@@ -16,15 +16,22 @@
 import logging
 
 import torch
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig
+from transformers.models.llama.modeling_llama import LlamaForCausalLM
 
 from convert import convert_llama_hf_to_te, convert_llama_te_to_hf
-from modeling_llama_te import NVLlamaConfig, NVLlamaForCausalLM
+from modeling_llama_te import NVLlamaForCausalLM
 
 
 def test_convert_llama_hf_to_te_roundtrip(caplog):
-    model_hf = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
-    # model_hf = LlamaForCausalLM.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8")
+    # Here we use a randomly-initialized model just to test the conversion, this avoids downloading the model from
+    # Hugging Face during CI.
+    config = AutoConfig.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8", dtype=torch.float32)
+    config.num_hidden_layers = 1  # Just to make this faster.
+    model_hf = LlamaForCausalLM(config)
+
+    # Alternatively, we can use a model from Hugging Face, but this requires authenticating.
+    # model_hf = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
 
     with caplog.at_level(logging.WARNING):
         model_te = convert_llama_hf_to_te(model_hf)
@@ -57,12 +64,14 @@ def test_convert_llama_hf_to_te_roundtrip(caplog):
 
 
 def test_convert_hf_to_te_with_bf16():
-    model_hf = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B-Instruct", dtype=torch.bfloat16)
+    config = AutoConfig.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8", dtype=torch.bfloat16)
+    model_hf = LlamaForCausalLM(config)
+    model_hf.to(dtype=torch.bfloat16)  # I think the original llama3 model doesn't initialize in bf16.
     convert_llama_hf_to_te(model_hf)
 
 
 def test_convert_te_to_hf_with_bf16():
-    config = NVLlamaConfig.from_pretrained("meta-llama/Llama-3.1-8B-Instruct", dtype=torch.bfloat16)
+    config = AutoConfig.from_pretrained("nvidia/Llama-3.1-8B-Instruct-FP8", dtype=torch.bfloat16)
     model_te = NVLlamaForCausalLM(config)
-    model_te.to(dtype=torch.float32)  # I think the original llama3 model doesn't initialize in fp32.
+    model_te.to(dtype=torch.float32)  # I think the original llama3 model doesn't initialize in bf16.
     convert_llama_te_to_hf(model_te)
