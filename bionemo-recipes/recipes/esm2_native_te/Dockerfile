@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.4
-FROM nvcr.io/nvidia/pytorch:25.09-py3
+FROM gitlab-master.nvidia.com:5005/dl/transformerengine/transformerengine:main-pytorch-py3-devel
 
 RUN --mount=type=secret,id=netrc,target=/root/.netrc \
     --mount=type=cache,target=/root/.cache/pip \
