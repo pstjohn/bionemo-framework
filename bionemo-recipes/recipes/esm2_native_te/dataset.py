@@ -138,7 +138,7 @@ def create_bshd_dataloader(
         batch_size=micro_batch_size,
         collate_fn=data_collator,
         num_workers=num_workers,
-        pin_memory=True,
+        # pin_memory=True,
         persistent_workers=True,
     )
 
@@ -206,7 +206,7 @@ def create_thd_dataloader(
         batch_size=None,  # The TokenPackingDataset will handle the batching.
         collate_fn=data_collator,
         num_workers=num_workers,
-        pin_memory=True,
+        # pin_memory=True,
         persistent_workers=True,
     )
 
