@@ -17,8 +17,9 @@ import logging
 
 import datasets
 import datasets.distributed
-from torch.utils.data import DistributedSampler
-from torchdata.stateful_dataloader import StatefulDataLoader
+from torch.utils.data import DataLoader, DistributedSampler
+
+# from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import AutoTokenizer
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 
@@ -132,13 +133,13 @@ def create_bshd_dataloader(
         seed=seed,
     )
 
-    train_dataloader = StatefulDataLoader(
+    train_dataloader = DataLoader(
         tokenized_dataset,
         sampler=sampler,
         batch_size=micro_batch_size,
         collate_fn=data_collator,
         num_workers=num_workers,
-        # pin_memory=True,  # TODO: Uncomment this when we figure out why _pin_memory_thread's API changed.
+        pin_memory=True,  # TODO: Uncomment this when we figure out why _pin_memory_thread's API changed.
         persistent_workers=True,
     )
 
@@ -201,12 +202,12 @@ def create_thd_dataloader(
         seed=seed,
     )
 
-    train_dataloader = StatefulDataLoader(
+    train_dataloader = DataLoader(
         TokenPackingDataset(tokenized_dataset, max_tokens_per_batch=token_micro_batch_size),
         batch_size=None,  # The TokenPackingDataset will handle the batching.
         collate_fn=data_collator,
         num_workers=num_workers,
-        # pin_memory=True,  # TODO: Uncomment this when we figure out why _pin_memory_thread's API changed.
+        pin_memory=True,  # TODO: Uncomment this when we figure out why _pin_memory_thread's API changed.
         persistent_workers=True,
     )
 
