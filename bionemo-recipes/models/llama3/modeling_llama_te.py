@@ -21,6 +21,7 @@ import torch.nn as nn
 import transformer_engine.pytorch
 import transformers
 from transformer_engine.pytorch.attention import InferenceParams
+from transformer_engine.pytorch.attention.inference import PagedKVCacheManager
 from transformer_engine.pytorch.attention.rope import RotaryPositionEmbedding
 from transformers import LlamaConfig, PreTrainedModel
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
@@ -30,9 +31,6 @@ from transformers.utils.generic import TransformersKwargs
 
 class NVLlamaConfig(LlamaConfig):
     """NVLlama configuration."""
-
-    attn_input_format: str = "bshd"
-    self_attn_mask_type: str = "padding_causal"
 
 
 class NVLlamaPreTrainedModel(PreTrainedModel):
@@ -68,8 +66,8 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
                     qkv_weight_interleaved=True,
                     normalization="RMSNorm",
                     activation="swiglu",
-                    attn_input_format=config.attn_input_format,
-                    self_attn_mask_type=config.self_attn_mask_type,
+                    attn_input_format="thd",
+                    self_attn_mask_type="padding_causal",
                     num_gqa_groups=config.num_key_value_heads,
                     layer_number=layer_idx + 1,
                     params_dtype=config.dtype,
@@ -123,49 +121,49 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
             inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
         hidden_states = inputs_embeds
-        if self.config.attn_input_format == "bshd":
-            if past_key_values is not None:
-                max_seq_len = past_key_values.max_sequence_length
-            else:
-                max_seq_len = hidden_states.shape[1]
-            te_rope_emb = self.rotary_emb(max_seq_len=max_seq_len)
-        elif self.config.attn_input_format == "thd":
-            te_rope_emb = self.rotary_emb(max_seq_len=kwargs["cu_seq_lens_q"][-1])
 
-        has_thd_input = [
-            x is not None
-            for x in [
-                kwargs.get("cu_seq_lens_q", None),
-                kwargs.get("cu_seq_lens_k", None),
-                kwargs.get("max_length_q", None),
-                kwargs.get("max_length_k", None),
-            ]
-        ]
+        has_thd_input = [x in kwargs for x in ["cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k"]]
+        should_pack_inputs = not any(has_thd_input)
 
-        if isinstance(past_key_values, InferenceParams):
-            # lengths = attention_mask.sum(dim=1) if attention_mask is not None else torch.tensor([0])
-            lengths = input_ids.ne(0).sum(dim=1) if input_ids is not None else torch.tensor([0])
-            past_key_values.pre_step(OrderedDict(zip(list(range(len(lengths))), lengths.tolist())))
+        # This might be slower for BSHD + padding with fused attention backend. But it should be faster for the flash
+        # attention backend.
+        if should_pack_inputs:
+            # Left-side padding is not supported in TE layers, so to make generation work with TE we dynamically convert
+            # to THD-style inputs in our forward pass, and then convert back to BSHD for the output. This lets the
+            # entire transformer stack run in THD mode.
+            assert attention_mask is not None, "Attention mask is required when using BSHD inputs."
+            batch_size = hidden_states.size(0)
+            hidden_states, indices, cu_seqlens, max_seqlen, _ = _unpad_input(hidden_states, attention_mask)
+            cu_seq_lens_q = cu_seq_lens_k = cu_seqlens
+            max_length_q = max_length_k = max_seqlen
 
-        if self.config.attn_input_format == "thd":
-            if not all(has_thd_input):
-                raise ValueError(
-                    "cu_seq_lens_q, cu_seq_lens_k, max_length_q, and max_length_k must be provided when using THD inputs."
-                )
+        else:
+            # Here, we're providing THD-style inputs, so we can just grab the kwargs.
             assert hidden_states.dim() == 3 and hidden_states.size(0) == 1, (
                 "THD expects embeddings shaped [1, total_tokens, hidden_size]."
             )
             hidden_states = hidden_states.squeeze(0)
-            attention_mask = None
+            cu_seq_lens_q = kwargs["cu_seq_lens_q"]
+            cu_seq_lens_k = kwargs["cu_seq_lens_k"]
+            max_length_q = kwargs["max_length_q"]
+            max_length_k = kwargs["max_length_k"]
 
-        elif self.config.attn_input_format == "bshd" and any(has_thd_input):
-            raise ValueError(
-                "cu_seq_lens_q, cu_seq_lens_k, max_length_q, and max_length_k are not allowed when using BSHD inputs."
+        # If we're using kv-caching, we can't trust the max_length_q value as the true max length for rotary
+        # embeddings, since this will be 1 in generation. Instead we can take the max sequence length from the past
+        # key values object.
+        te_rope_emb = self.rotary_emb(
+            max_seq_len=max_length_q if past_key_values is None else past_key_values.max_ctx_len
+        )
+
+        if isinstance(past_key_values, InferenceParams):
+            # In generation mode, we set the length to 1 for each batch index. Otherwise, we use the attention mask to
+            # compute the lengths of each sequence in the batch.
+            lengths = (
+                attention_mask.sum(dim=1).tolist()
+                if attention_mask.shape == input_ids.shape
+                else [1] * input_ids.shape[0]
             )
-
-        # Construct the appropriate attention mask.
-        if attention_mask is not None and self.config.self_attn_mask_type == "padding_causal":
-            attention_mask = ~attention_mask.to(bool)[:, None, None, :]
+            past_key_values.pre_step(OrderedDict(zip(list(range(len(lengths))), lengths)))
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             if output_hidden_states:
@@ -173,20 +171,25 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
 
             hidden_states = decoder_layer(
                 hidden_states,
-                attention_mask=attention_mask,
+                attention_mask=None,
                 rotary_pos_emb=te_rope_emb,
                 inference_params=past_key_values,
-                cu_seqlens_q=kwargs.get("cu_seq_lens_q", None),
-                cu_seqlens_kv=kwargs.get("cu_seq_lens_k", None),
-                max_seqlen_q=kwargs.get("max_length_q", None),
-                max_seqlen_kv=kwargs.get("max_length_k", None),
+                cu_seqlens_q=cu_seq_lens_q,
+                cu_seqlens_kv=cu_seq_lens_k,
+                max_seqlen_q=max_length_q,
+                max_seqlen_kv=max_length_k,
             )
 
         hidden_states = self.norm(hidden_states)
 
-        # add hidden states from the last decoder layer
+        # add hidden states from the last decoder layer. Note that these will be in THD format; we could possibly pad
+        # these with the same _pad_input call as below if we wanted them returned in BSHD format.
         if output_hidden_states:
             all_hidden_states = (*all_hidden_states, hidden_states)
+
+        if should_pack_inputs:
+            # If we've converted BSHD to THD for our TE layers, we need to convert back to BSHD for the output.
+            hidden_states = _pad_input(hidden_states, indices, batch_size, max_length_q)
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
@@ -225,7 +228,7 @@ class NVLlamaForCausalLM(NVLlamaPreTrainedModel, transformers.GenerationMixin):
         labels: torch.Tensor | None = None,
         use_cache: bool | None = None,
         cache_position: torch.Tensor | None = None,
-        only_keep_last_logits: bool = False,
+        logits_to_keep: int | torch.Tensor = 0,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         """Forward pass for the NVLlamaForCausalLM model.
@@ -239,8 +242,8 @@ class NVLlamaForCausalLM(NVLlamaPreTrainedModel, transformers.GenerationMixin):
             labels (torch.Tensor): The labels.
             use_cache (bool): Whether to use cache.
             cache_position (torch.Tensor): The cache position.
-            only_keep_last_logits (bool): Whether to keep only the last logits, as a workaround for the fact that TE
-                doesn't support left-side padding with `padding_causal` attention masks.
+            logits_to_keep (int | torch.Tensor): Whether to keep only the last logits to reduce the memory footprint of
+                the model during generation.
             **kwargs: Additional keyword arguments.
 
         Returns:
@@ -258,26 +261,13 @@ class NVLlamaForCausalLM(NVLlamaPreTrainedModel, transformers.GenerationMixin):
         )
 
         hidden_states = outputs.last_hidden_state
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
 
-        # TE doesn't support left-side padding with `padding_causal` attention masks, and InferenceParams doesn't
-        # support arbitrary attention masks (and the attention backend for arbitrary masks is the slower, unfused
-        # backend). To keep the inference interface consistent with HF's `GenerationMixin.generate` interface, we use a
-        # `only_keep_last_logits` flag to indicate that we should pick out and return only the last token's hidden state
-        # during pre-fill. This allows generation to work with right-side padding. Note, make sure that you decode the
-        # tokens with `skip_special_tokens=True` when using this flag, otherwise padding tokens will interrupt the
-        # generated text.
-        if (
-            only_keep_last_logits
-            and attention_mask is not None  # Padded inputs
-            and hidden_states.shape[1] > 1  # We're in pre-fill mode
-        ):
-            seqlens = attention_mask.sum(dim=1)  # shape: [batch]
-            # For each batch idx, select hidden_states[idx, seqlens[idx]-1, :]
-            batch_indices = torch.arange(hidden_states.size(0), device=hidden_states.device)
-            selected_hidden_states = hidden_states[batch_indices, seqlens - 1, :]  # shape: [batch, hidden_dim]
-            hidden_states = selected_hidden_states.unsqueeze(1)  # shape: [batch, 1, hidden_dim]
-
-        logits = self.lm_head(hidden_states)
+        if hidden_states.ndim == 3:
+            logits = self.lm_head(hidden_states[:, slice_indices, :])
+        else:  # With THD inputs, batch and sequence dimensions are collapsed in the first dimension.
+            logits = self.lm_head(hidden_states[slice_indices, :])
 
         loss = None
         if labels is not None:
@@ -306,3 +296,86 @@ class NVLlamaForQuestionAnswering(transformers.modeling_layers.GenericForQuestio
 class NVLlamaForTokenClassification(  # noqa: D101
     transformers.modeling_layers.GenericForTokenClassification, NVLlamaPreTrainedModel
 ): ...
+
+
+torch._dynamo.config.capture_scalar_outputs = True
+
+
+@torch.compile
+def _pad_input(hidden_states, indices, batch, seqlen):
+    """Convert a THD tensor to a BSHD equivalent tensor.
+
+    Adapted from huggingface/transformers/modeling_flash_attention_utils.py
+
+    Arguments:
+        hidden_states: (total_nnz, ...), where total_nnz = number of tokens in selected in attention_mask.
+        indices: (total_nnz), the indices that represent the non-masked tokens of the original padded input sequence.
+        batch: int, batch size for the padded sequence.
+        seqlen: int, maximum sequence length for the padded sequence.
+
+    Return:
+        hidden_states: (batch, seqlen, ...)
+    """
+    dim = hidden_states.shape[1:]
+    output = torch.zeros((batch * seqlen), *dim, device=hidden_states.device, dtype=hidden_states.dtype)
+    output[indices] = hidden_states
+    return output.view(batch, seqlen, *dim)
+
+
+@torch.compile
+def _unpad_input(hidden_states, attention_mask, unused_mask=None):
+    """Convert a BSHD tensor to a THD equivalent tensor.
+
+    Adapted from huggingface/transformers/modeling_flash_attention_utils.py
+
+    Arguments:
+        hidden_states: (batch, seqlen, ...)
+        attention_mask: (batch, seqlen), bool / int, 1 means valid and 0 means not valid.
+        unused_mask: (batch, seqlen), bool / int, 1 means the element is allocated but unused.
+
+    Return:
+        hidden_states: (total_nnz, ...), where total_nnz = number of tokens selected in attention_mask + unused_mask.
+        indices: (total_nnz), the indices of masked tokens from the flattened input sequence.
+        cu_seqlens: (batch + 1), the cumulative sequence lengths, used to index into hidden_states.
+        max_seqlen_in_batch: int
+        seqused: (batch), returns the number of tokens selected in attention_mask + unused_mask.
+    """
+    batch_size = hidden_states.size(0)
+    seq_length = hidden_states.size(1)
+
+    if attention_mask.shape[1] != seq_length:  # Likely in generation mode with kv-caching
+        return (
+            hidden_states.squeeze(1),  # hidden_states
+            torch.arange(batch_size, dtype=torch.int64, device=hidden_states.device),  # indices
+            torch.arange(batch_size + 1, dtype=torch.int32, device=hidden_states.device),  # cu_seqlens
+            1,  # max_seqlen
+            1,  # seqused
+        )
+
+    all_masks = (attention_mask + unused_mask) if unused_mask is not None else attention_mask
+    seqlens_in_batch = all_masks.sum(dim=-1, dtype=torch.int32)
+    used_seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
+    indices = torch.nonzero(all_masks.flatten(), as_tuple=False).flatten()
+    max_seqlen_in_batch = seqlens_in_batch.max().item()
+    cu_seqlens = torch.nn.functional.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
+
+    return (
+        hidden_states.reshape(-1, *hidden_states.shape[2:])[indices],
+        indices,
+        cu_seqlens,
+        max_seqlen_in_batch,
+        used_seqlens_in_batch,
+    )
+
+
+class HFInferenceParams(InferenceParams):
+    """Extension of the InferenceParams class to support beam search."""
+
+    def reorder_cache(self, beam_idx: torch.LongTensor):
+        """Reorder the cache based on the beam indices."""
+        if isinstance(self.cache_manager, PagedKVCacheManager):
+            raise NotImplementedError("Beam search is not supported for paged cache manager.")
+        for layer_number, (key_cache, value_cache) in self.cache_manager.cache.items():
+            updated_key_cache = key_cache.index_select(0, beam_idx)
+            updated_value_cache = value_cache.index_select(0, beam_idx)
+            self.cache_manager.cache[layer_number] = (updated_key_cache, updated_value_cache)
