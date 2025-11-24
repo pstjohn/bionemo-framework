@@ -43,5 +43,6 @@
   "tie_word_embeddings": true,
   "transformers_version": "4.57.1",
   "use_cache": true,
-  "vocab_size": 128256
+  "vocab_size": 128256,
+  "attn_input_format": "bshd"
 }

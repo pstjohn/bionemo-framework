@@ -42,6 +42,8 @@ AUTO_MAP = {
 class NVLlamaConfig(LlamaConfig):
     """NVLlama configuration."""
 
+    attn_input_format: str = "thd"
+
 
 class NVLlamaPreTrainedModel(PreTrainedModel):
     """Base class for NVLlama models."""
@@ -58,6 +60,7 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
     def __init__(self, config: LlamaConfig):
         """Initialize the NVLlama model."""
         super().__init__(config)
+        self.config = config
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
@@ -76,7 +79,7 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
                     qkv_weight_interleaved=True,
                     normalization="RMSNorm",
                     activation="swiglu",
-                    attn_input_format="thd",
+                    attn_input_format=config.attn_input_format,
                     self_attn_mask_type="padding_causal",
                     num_gqa_groups=config.num_key_value_heads,
                     layer_number=layer_idx + 1,
@@ -133,7 +136,7 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
         hidden_states = inputs_embeds
 
         has_thd_input = [x in kwargs for x in ["cu_seq_lens_q", "cu_seq_lens_k", "max_length_q", "max_length_k"]]
-        should_pack_inputs = not any(has_thd_input)
+        should_pack_inputs = not any(has_thd_input) and self.config.attn_input_format == "thd"
 
         # This might be slower for BSHD + padding with fused attention backend. But it should be faster for the flash
         # attention backend.
@@ -147,7 +150,7 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
             cu_seq_lens_q = cu_seq_lens_k = cu_seqlens
             max_length_q = max_length_k = max_seqlen
 
-        else:
+        elif self.config.attn_input_format == "thd":
             # Here, we're providing THD-style inputs, so we can just grab the kwargs.
             assert hidden_states.dim() == 3 and hidden_states.size(0) == 1, (
                 "THD expects embeddings shaped [1, total_tokens, hidden_size]."
@@ -157,6 +160,12 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
             cu_seq_lens_k = kwargs["cu_seq_lens_k"]
             max_length_q = kwargs["max_length_q"]
             max_length_k = kwargs["max_length_k"]
+
+        else:
+            assert attention_mask is not None, "Attention mask is required when using BSHD inputs."
+            attention_mask = attention_mask[:, None, None, :] < -1
+            cu_seq_lens_q = cu_seq_lens_k = None
+            max_length_q = max_length_k = hidden_states.size(1)
 
         # If we're using kv-caching, we can't trust the max_length_q value as the true max length for rotary
         # embeddings, since this will be 1 in generation. Instead we can take the max sequence length from the past
@@ -181,7 +190,7 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
 
             hidden_states = decoder_layer(
                 hidden_states,
-                attention_mask=None,
+                attention_mask=None if self.config.attn_input_format == "thd" else attention_mask,
                 rotary_pos_emb=te_rope_emb,
                 inference_params=past_key_values,
                 cu_seqlens_q=cu_seq_lens_q,
