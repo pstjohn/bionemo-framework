@@ -28,6 +28,7 @@ Test Strategy:
 Each test uses temporary directories and disables wandb logging for isolation.
 """
 
+import gc
 import os
 import subprocess
 
@@ -78,6 +79,8 @@ def test_checkpoint_save_and_load_single_process_ddp(recipe_path, tmp_path):
         )
 
     main_ddp(phase1_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Phase 1 creates this directory structure:
     # ckpt_subdir/
@@ -126,6 +129,8 @@ def test_checkpoint_save_and_load_single_process_ddp(recipe_path, tmp_path):
         )
 
     main_ddp(phase2_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Phase 2 adds to the directory structure:
     # ckpt_subdir/
@@ -351,6 +356,8 @@ def test_checkpoint_save_and_load_single_process_fsdp2(recipe_path, tmp_path):
         )
 
     main_fsdp2(phase1_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Checkpoints are saved in a subdirectory named after the script
     ckpt_subdir = os.path.join(temp_dir, "train_fsdp2")
@@ -395,6 +402,8 @@ def test_checkpoint_save_and_load_single_process_fsdp2(recipe_path, tmp_path):
         )
 
     main_fsdp2(phase2_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Verify phase 2 completed and created additional checkpoints
     final_checkpoint_dirs = [
@@ -562,6 +571,8 @@ def test_scheduler_resume_single_gpu(recipe_path, tmp_path):
         )
 
     main_ddp(phase1_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Phase 2: Resume training for 5 more steps
     with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
@@ -580,6 +591,8 @@ def test_scheduler_resume_single_gpu(recipe_path, tmp_path):
         )
 
     main_ddp(phase2_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Verify checkpoints were created
     ckpt_subdir = os.path.join(temp_dir, "train_ddp")
@@ -626,6 +639,8 @@ def test_final_model_save_ddp(recipe_path, tmp_path):
         )
 
     main_ddp(config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Check final model directory
     final_model_dir = os.path.join(temp_dir, "train_ddp", "final_model")
@@ -666,6 +681,8 @@ def test_final_model_save_fsdp2(recipe_path, tmp_path):
         )
 
     main_fsdp2(config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Check final model directory
     final_model_dir = os.path.join(temp_dir, "train_fsdp2", "final_model")
