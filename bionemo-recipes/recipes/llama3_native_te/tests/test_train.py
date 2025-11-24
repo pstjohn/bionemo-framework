@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import random
 
 import pytest
@@ -53,6 +54,8 @@ def test_sanity_convergence_ddp(tmp_path, recipe_path, mock_genomic_parquet):
         )
 
     final_loss = main_ddp(sanity_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # For genomic Causal LM, we expect convergence to < 5.0 on the small test dataset
     # The model should learn to predict simple patterns in the mock data
@@ -108,6 +111,8 @@ def test_sanity_convergence_ddp_non_streaming_dataset(tmp_path, recipe_path, moc
         )
 
     final_loss = main_ddp(sanity_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Non-streaming mode should converge just as well as streaming
     assert final_loss < 5.0, f"Final loss {final_loss} is too high, expected < 5.0"
@@ -135,6 +140,8 @@ def test_sanity_convergence_fsdp2_non_streaming_dataset(tmp_path, recipe_path, m
         )
 
     final_loss = main_fsdp2(sanity_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Non-streaming mode should converge just as well as streaming
     assert final_loss < 5.0, f"Final loss {final_loss} is too high, expected < 5.0"
@@ -163,6 +170,8 @@ def test_sanity_ddp_with_lazy_tokenization(tmp_path, recipe_path, mock_genomic_p
         )
 
     final_loss = main_ddp(sanity_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Just check that training runs without errors
     # We don't check convergence because lazy tokenization produces different windowing
@@ -192,6 +201,8 @@ def test_sanity_fsdp2_with_lazy_tokenization(tmp_path, recipe_path, mock_genomic
         )
 
     final_loss = main_fsdp2(sanity_config)
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # Just check that training runs without errors
     assert final_loss is not None, "Training should complete and return a loss value"
