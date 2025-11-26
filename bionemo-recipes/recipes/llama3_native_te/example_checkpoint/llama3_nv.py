@@ -14,7 +14,7 @@
 # limitations under the License.
 
 from collections import OrderedDict
-from typing import Unpack
+from typing import Callable, Unpack
 
 import torch
 import torch.nn as nn
@@ -43,6 +43,8 @@ class NVLlamaConfig(LlamaConfig):
     """NVLlama configuration."""
 
     attn_input_format: str = "thd"
+    use_lm_head_bias: bool = False
+    lm_head_bias_init_method: Callable | None = None
 
 
 class NVLlamaPreTrainedModel(PreTrainedModel):
@@ -52,6 +54,33 @@ class NVLlamaPreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     _no_split_modules = ("TransformerLayer",)
     _skip_keys_device_placement = ("past_key_values",)
+
+    def _init_weights(self, module):
+        """TE-specific weight initialization."""
+        super()._init_weights(module)
+
+        # Copied from transformers.modeling_utils.PreTrainedModel._init_weights
+        if hasattr(self.config, "initializer_range"):
+            std = self.config.initializer_range
+        else:
+            # 0.02 is the standard default value across the library
+            std = getattr(self.config.get_text_config(), "initializer_range", 0.02)
+
+        if isinstance(
+            module, (nn.Linear, transformer_engine.pytorch.Linear, transformer_engine.pytorch.LayerNormLinear)
+        ):
+            module.weight.data.normal_(mean=0.0, std=std)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        if isinstance(module, transformer_engine.pytorch.LayerNorm):
+            if hasattr(module, "weight") and module.weight is not None:
+                module.weight.data.fill_(1.0)
+            if hasattr(module, "bias") and module.bias is not None:
+                module.bias.data.zero_()
+        if isinstance(module, transformer_engine.pytorch.LayerNormLinear):
+            module.layer_norm_weight.data.fill_(1.0)
+            if module.layer_norm_bias is not None:
+                module.layer_norm_bias.data.zero_()
 
 
 class NVLlamaModel(NVLlamaPreTrainedModel):
@@ -230,12 +259,18 @@ class NVLlamaForCausalLM(NVLlamaPreTrainedModel, transformers.GenerationMixin):
         self.lm_head = transformer_engine.pytorch.Linear(
             config.hidden_size,
             config.vocab_size,
-            bias=False,
+            bias=config.use_lm_head_bias,
             params_dtype=config.dtype,
         )
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def post_init(self):
+        """Post-initialization hook."""
+        super().post_init()
+        if self.config.lm_head_bias_init_method is not None:
+            self.lm_head.bias.data = self.config.lm_head_bias_init_method(self.lm_head.bias.data)
 
     def forward(
         self,
