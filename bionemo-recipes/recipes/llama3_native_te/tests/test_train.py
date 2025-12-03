@@ -33,7 +33,7 @@ def set_seed():
         torch.cuda.manual_seed_all(42)
 
 
-def test_sanity_convergence_ddp(tmp_path, recipe_path, mock_genomic_parquet):
+def test_sanity_convergence_ddp_te(tmp_path, recipe_path):
     """Test that DDP training converges on mock genomic data.
 
     This test validates:
@@ -49,7 +49,6 @@ def test_sanity_convergence_ddp(tmp_path, recipe_path, mock_genomic_parquet):
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
-                f"dataset.load_dataset_kwargs.data_files={mock_genomic_parquet}",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
             ],
         )
@@ -58,12 +57,42 @@ def test_sanity_convergence_ddp(tmp_path, recipe_path, mock_genomic_parquet):
     gc.collect()
     torch.cuda.empty_cache()
 
-    # For genomic Causal LM, we expect convergence to < 5.0 on the small test dataset
+    # For genomic Causal LM, we expect convergence to < 2.0 on the small test dataset
     # The model should learn to predict simple patterns in the mock data
-    assert final_loss < 5.0, f"Final loss {final_loss} is too high, expected < 5.0"
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"
 
 
-def test_sanity_convergence_fsdp2(tmp_path, recipe_path, mock_genomic_parquet):
+def test_sanity_convergence_ddp_hf(tmp_path, recipe_path):
+    """Test that DDP training converges on mock genomic data.
+
+    This test validates:
+    - The train_ddp.py script runs end-to-end without errors
+    - Model, optimizer, and dataloader integrate correctly
+    - Training converges to reasonable loss on small dataset
+    - Uses L0_sanity config with small model and few training steps
+    """
+    # Run the training script with Hydra configuration overrides
+    with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
+        sanity_config = compose(
+            config_name="L0_sanity",
+            overrides=[
+                f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
+                "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
+                "use_te=false",
+            ],
+        )
+
+    final_loss = main_ddp(sanity_config)
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # For genomic Causal LM, we expect convergence to < 2.0 on the small test dataset
+    # The model should learn to predict simple patterns in the mock data
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"
+
+
+def test_sanity_convergence_fsdp2_te_bshd(tmp_path, recipe_path):
     """Test that FSDP2 training converges on mock genomic data.
 
     This test validates:
@@ -79,18 +108,73 @@ def test_sanity_convergence_fsdp2(tmp_path, recipe_path, mock_genomic_parquet):
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
-                f"dataset.load_dataset_kwargs.data_files={mock_genomic_parquet}",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
+                "config_kwargs.attn_input_format=bshd",
             ],
         )
 
     final_loss = main_fsdp2(sanity_config)
 
     # FSDP2 should achieve similar convergence to DDP
-    assert final_loss < 5.0, f"Final loss {final_loss} is too high, expected < 5.0"
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"
 
 
-def test_sanity_convergence_ddp_non_streaming_dataset(tmp_path, recipe_path, mock_genomic_parquet):
+def test_sanity_convergence_fsdp2_te_thd(tmp_path, recipe_path):
+    """Test that FSDP2 training converges on mock genomic data.
+
+    This test validates:
+    - The train_fsdp2.py script runs end-to-end without errors
+    - FSDP2 wrapping and sharding work correctly
+    - Training converges to reasonable loss on small dataset
+    - Uses L0_sanity config with small model and few training steps
+    """
+    # Run the training script with Hydra configuration overrides
+    with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
+        sanity_config = compose(
+            config_name="L0_sanity",
+            overrides=[
+                f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
+                "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
+                "config_kwargs.attn_input_format=thd",
+            ],
+        )
+
+    final_loss = main_fsdp2(sanity_config)
+
+    # FSDP2 should achieve similar convergence to DDP
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"
+
+
+def test_sanity_convergence_fsdp2_hf(tmp_path, recipe_path):
+    """Test that FSDP2 training converges on mock genomic data.
+
+    This test validates:
+    - The train_fsdp2.py script runs end-to-end without errors
+    - FSDP2 wrapping and sharding work correctly
+    - Training converges to reasonable loss on small dataset
+    - Uses L0_sanity config with small model and few training steps
+    """
+    # Run the training script with Hydra configuration overrides
+    with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
+        sanity_config = compose(
+            config_name="L0_sanity",
+            overrides=[
+                f"+wandb_init_args.dir={tmp_path}",
+                f"checkpoint.ckpt_dir={tmp_path}",
+                "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
+                "use_te=false",
+                "use_torch_compile=false",  # Getting occasional errors "AssertionError: s52" with torch.compile.
+            ],
+        )
+
+    final_loss = main_fsdp2(sanity_config)
+
+    # FSDP2 should achieve similar convergence to DDP
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"
+
+
+def test_sanity_convergence_ddp_non_streaming_dataset(tmp_path, recipe_path):
     """Test that DDP training works with non-streaming dataset.
 
     This test validates:
@@ -105,7 +189,6 @@ def test_sanity_convergence_ddp_non_streaming_dataset(tmp_path, recipe_path, moc
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
-                f"dataset.load_dataset_kwargs.data_files={mock_genomic_parquet}",
                 "dataset.load_dataset_kwargs.streaming=False",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
             ],
@@ -116,10 +199,10 @@ def test_sanity_convergence_ddp_non_streaming_dataset(tmp_path, recipe_path, moc
     torch.cuda.empty_cache()
 
     # Non-streaming mode should converge just as well as streaming
-    assert final_loss < 5.0, f"Final loss {final_loss} is too high, expected < 5.0"
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"
 
 
-def test_sanity_convergence_fsdp2_non_streaming_dataset(tmp_path, recipe_path, mock_genomic_parquet):
+def test_sanity_convergence_fsdp2_non_streaming_dataset(tmp_path, recipe_path):
     """Test that FSDP2 training works with non-streaming dataset.
 
     This test validates:
@@ -134,7 +217,6 @@ def test_sanity_convergence_fsdp2_non_streaming_dataset(tmp_path, recipe_path, m
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
-                f"dataset.load_dataset_kwargs.data_files={mock_genomic_parquet}",
                 "dataset.load_dataset_kwargs.streaming=False",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
             ],
@@ -145,10 +227,10 @@ def test_sanity_convergence_fsdp2_non_streaming_dataset(tmp_path, recipe_path, m
     torch.cuda.empty_cache()
 
     # Non-streaming mode should converge just as well as streaming
-    assert final_loss < 5.0, f"Final loss {final_loss} is too high, expected < 5.0"
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"
 
 
-def test_sanity_ddp_with_lazy_tokenization(tmp_path, recipe_path, mock_genomic_parquet):
+def test_sanity_ddp_with_lazy_tokenization(tmp_path, recipe_path):
     """Test that DDP training works with lazy tokenization enabled.
 
     This test validates:
@@ -163,7 +245,6 @@ def test_sanity_ddp_with_lazy_tokenization(tmp_path, recipe_path, mock_genomic_p
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
-                f"dataset.load_dataset_kwargs.data_files={mock_genomic_parquet}",
                 "dataset.use_lazy_tokenization=True",
                 "num_train_steps=10",  # Just verify it runs, don't test convergence
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
@@ -179,7 +260,7 @@ def test_sanity_ddp_with_lazy_tokenization(tmp_path, recipe_path, mock_genomic_p
     assert final_loss is not None, "Training should complete and return a loss value"
 
 
-def test_sanity_fsdp2_with_lazy_tokenization(tmp_path, recipe_path, mock_genomic_parquet):
+def test_sanity_fsdp2_with_lazy_tokenization(tmp_path, recipe_path):
     """Test that FSDP2 training works with lazy tokenization enabled.
 
     This test validates:
@@ -194,7 +275,6 @@ def test_sanity_fsdp2_with_lazy_tokenization(tmp_path, recipe_path, mock_genomic
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
-                f"dataset.load_dataset_kwargs.data_files={mock_genomic_parquet}",
                 "dataset.use_lazy_tokenization=True",
                 "num_train_steps=10",  # Just verify it runs, don't test convergence
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
@@ -209,7 +289,7 @@ def test_sanity_fsdp2_with_lazy_tokenization(tmp_path, recipe_path, mock_genomic
     assert final_loss is not None, "Training should complete and return a loss value"
 
 
-def test_sanity_convergence_ddp_with_sequence_packing(tmp_path, recipe_path, mock_genomic_parquet):
+def test_sanity_convergence_ddp_with_sequence_packing(tmp_path, recipe_path):
     """Test that DDP training works with sequence packing enabled.
 
     This test validates:
@@ -224,7 +304,6 @@ def test_sanity_convergence_ddp_with_sequence_packing(tmp_path, recipe_path, moc
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
-                f"dataset.load_dataset_kwargs.data_files={mock_genomic_parquet}",
                 "use_sequence_packing=true",
                 "dataset.max_seq_length=1024",
                 "config_kwargs.attn_input_format=thd",
@@ -238,10 +317,10 @@ def test_sanity_convergence_ddp_with_sequence_packing(tmp_path, recipe_path, moc
     torch.cuda.empty_cache()
 
     # Just check that training runs without errors
-    assert final_loss < 5.0, f"Final loss {final_loss} is too high, expected < 5.0"
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"
 
 
-def test_sanity_convergence_fsdp2_with_sequence_packing(tmp_path, recipe_path, mock_genomic_parquet):
+def test_sanity_convergence_fsdp2_with_sequence_packing(tmp_path, recipe_path):
     """Test that FSDP2 training works with sequence packing enabled.
 
     This test validates:
@@ -256,7 +335,6 @@ def test_sanity_convergence_fsdp2_with_sequence_packing(tmp_path, recipe_path, m
             overrides=[
                 f"+wandb_init_args.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
-                f"dataset.load_dataset_kwargs.data_files={mock_genomic_parquet}",
                 "use_sequence_packing=true",
                 "config_kwargs.attn_input_format=thd",
                 "dataset.max_seq_length=1024",
@@ -270,4 +348,4 @@ def test_sanity_convergence_fsdp2_with_sequence_packing(tmp_path, recipe_path, m
     torch.cuda.empty_cache()
 
     # Just check that training runs without errors
-    assert final_loss < 5.0, f"Final loss {final_loss} is too high, expected < 5.0"
+    assert final_loss < 2.0, f"Final loss {final_loss} is too high, expected < 2.0"

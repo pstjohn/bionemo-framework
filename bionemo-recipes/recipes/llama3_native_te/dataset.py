@@ -32,25 +32,25 @@ logger = logging.getLogger(__name__)
 
 def create_tokenized_dataset(
     distributed_config: DistributedConfig,
-    tokenizer_path: str,
+    tokenizer_name_or_path: str,
     load_dataset_kwargs: dict,
     max_seq_length: int = 8192,
     stride: int = 200,
     buffer_size: int = 500_000,
     use_lazy_tokenization: bool = True,
-    sequence_column: str = "sequence",
+    text_column: str = "text",
 ):
     """Create a tokenized dataset with windowing.
 
     Args:
         distributed_config: The distributed configuration.
-        tokenizer_path: Path to the nucleotide tokenizer directory.
+        tokenizer_name_or_path: Name or path to the nucleotide tokenizer directory.
         load_dataset_kwargs: Keyword arguments to pass to `load_dataset`.
         max_seq_length: The maximum length of sequences (window size).
         stride: The stride for windowing (overlap = stride tokens).
         buffer_size: The buffer size for shuffle.
         use_lazy_tokenization: Whether to use datasets.set_transform for tokenization.
-        sequence_column: Name of the column containing genomic sequences (default: "sequence").
+        text_column: Name of the column containing genomic sequences (default: "text").
 
     Returns:
         Tuple of (tokenized_dataset, tokenizer).
@@ -67,13 +67,13 @@ def create_tokenized_dataset(
         )
         dataset = dataset.shuffle(seed=42, buffer_size=buffer_size)
 
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
 
     def tokenize_with_windowing(examples):
         """Tokenize nucleotide sequences with windowing (one-to-many mapping)."""
         # Tokenize with windowing using return_overflowing_tokens
         result = tokenizer(
-            examples[sequence_column],
+            examples[text_column],
             max_length=max_seq_length,
             stride=stride,
             truncation=True,
@@ -91,7 +91,7 @@ def create_tokenized_dataset(
         # This causes dataset.column_names to be None for streaming IterableDataset.
         #
         # For IterableDataset with None column_names (OpenGenome2):
-        #   - Must explicitly list columns to remove: [sequence_column, "record"]
+        #   - Must explicitly list columns to remove: [text_column, "record"]
         #   - IterableDataset.map() handles missing columns gracefully
         #
         # For regular Dataset (non-streaming, or streaming with consistent schema like ESM2):
@@ -100,9 +100,9 @@ def create_tokenized_dataset(
         #
         # TODO: Remove this workaround once Arc Institute fixes OpenGenome2 schema consistency.
         # When all shards have the same columns, dataset.column_names will work for both cases.
-        if isinstance(dataset, datasets.IterableDataset):
+        if isinstance(dataset, datasets.IterableDataset) and dataset.column_names is None:
             # Streaming dataset: column_names may be None due to inconsistent schema
-            columns_to_remove = [sequence_column, "record"]
+            columns_to_remove = [text_column, "record"]
         else:
             # Non-streaming dataset: use actual column names
             columns_to_remove = dataset.column_names
@@ -120,7 +120,7 @@ def create_tokenized_dataset(
 
 def create_bshd_dataloader(
     distributed_config: DistributedConfig,
-    tokenizer_path: str,
+    tokenizer_name_or_path: str,
     load_dataset_kwargs: dict,
     micro_batch_size: int,
     num_workers: int = 1,
@@ -130,7 +130,7 @@ def create_bshd_dataloader(
     buffer_size: int = 500_000,
     use_lazy_tokenization: bool = True,
     use_stateful_dataloader: bool = False,
-    sequence_column: str = "sequence",
+    text_column: str = "text",
     uppercase_labels: bool = False,
     mask_degenerate_bases: bool = True,
 ):
@@ -138,7 +138,7 @@ def create_bshd_dataloader(
 
     Args:
         distributed_config: The distributed configuration.
-        tokenizer_path: Path to the nucleotide tokenizer directory.
+        tokenizer_name_or_path: Name or path to the nucleotide tokenizer directory.
         load_dataset_kwargs: Keyword arguments to pass to `load_dataset`.
         micro_batch_size: The batch size per device.
         num_workers: The number of workers to use for the dataloader.
@@ -148,7 +148,7 @@ def create_bshd_dataloader(
         buffer_size: The buffer size for shuffle.
         use_lazy_tokenization: Whether to use datasets.set_transform for tokenization.
         use_stateful_dataloader: Whether to use the StatefulDataLoader to enable checkpointing the dataloader state.
-        sequence_column: Name of the column containing genomic sequences (default: "sequence").
+        text_column: Name of the column containing genomic sequences (default: "text").
         uppercase_labels: Whether to uppercase labels (genomic masking). Default: False.
         mask_degenerate_bases: Whether to mask non-ACGT bases (genomic masking). Default: False.
 
@@ -157,13 +157,13 @@ def create_bshd_dataloader(
     """
     tokenized_dataset, tokenizer = create_tokenized_dataset(
         distributed_config=distributed_config,
-        tokenizer_path=tokenizer_path,
+        tokenizer_name_or_path=tokenizer_name_or_path,
         load_dataset_kwargs=load_dataset_kwargs,
         max_seq_length=max_seq_length,
         stride=stride,
         buffer_size=buffer_size,
         use_lazy_tokenization=use_lazy_tokenization,
-        sequence_column=sequence_column,
+        text_column=text_column,
     )
 
     if isinstance(tokenized_dataset, datasets.IterableDataset):
@@ -214,7 +214,7 @@ def create_bshd_dataloader(
 
 def create_thd_dataloader(
     distributed_config: DistributedConfig,
-    tokenizer_path: str,
+    tokenizer_name_or_path: str,
     load_dataset_kwargs: dict,
     micro_batch_size: int | None = None,
     token_micro_batch_size: int | None = None,
@@ -224,7 +224,7 @@ def create_thd_dataloader(
     buffer_size: int = 500_000,
     use_lazy_tokenization: bool = True,
     use_stateful_dataloader: bool = False,
-    sequence_column: str = "sequence",
+    text_column: str = "text",
     uppercase_labels: bool = False,
     mask_degenerate_bases: bool = True,
 ):
@@ -232,7 +232,7 @@ def create_thd_dataloader(
 
     Args:
         distributed_config: The distributed configuration.
-        tokenizer_path: Path to the nucleotide tokenizer directory.
+        tokenizer_name_or_path: Name or path to the nucleotide tokenizer directory.
         load_dataset_kwargs: Keyword arguments to pass to `load_dataset`.
         micro_batch_size: The batch size per device.
         token_micro_batch_size: The maximum number of tokens per batch. If None, the micro_batch_size * max_seq_length
@@ -244,22 +244,22 @@ def create_thd_dataloader(
         buffer_size: The buffer size for shuffle.
         use_lazy_tokenization: Whether to use datasets.set_transform for tokenization.
         use_stateful_dataloader: Whether to use the StatefulDataLoader to enable checkpointing the dataloader state.
-        sequence_column: Name of the column containing genomic sequences (default: "sequence").
+        text_column: Name of the column containing genomic sequences (default: "text").
         uppercase_labels: Whether to uppercase labels (genomic masking). Default: False.
         mask_degenerate_bases: Whether to mask degenerate bases (genomic masking). Default: True.
 
     Returns:
         A dataloader that can be used for training.
     """
-    tokenized_dataset, tokenizer = create_tokenized_dataset(
+    tokenized_dataset, _ = create_tokenized_dataset(
         distributed_config=distributed_config,
-        tokenizer_path=tokenizer_path,
+        tokenizer_name_or_path=tokenizer_name_or_path,
         load_dataset_kwargs=load_dataset_kwargs,
         max_seq_length=max_seq_length,
         stride=stride,
         buffer_size=buffer_size,
         use_lazy_tokenization=use_lazy_tokenization,
-        sequence_column=sequence_column,
+        text_column=text_column,
     )
 
     assert isinstance(tokenized_dataset, datasets.IterableDataset), "THD token packing requires a streaming dataset."
