@@ -47,7 +47,7 @@ def test_sanity_convergence_ddp_te(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
             ],
@@ -76,7 +76,7 @@ def test_sanity_convergence_ddp_hf(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
                 "use_te=false",
@@ -106,7 +106,7 @@ def test_sanity_convergence_fsdp2_te_bshd(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
                 "config_kwargs.attn_input_format=bshd",
@@ -133,7 +133,7 @@ def test_sanity_convergence_fsdp2_te_thd(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
                 "config_kwargs.attn_input_format=thd",
@@ -160,7 +160,7 @@ def test_sanity_convergence_fsdp2_hf(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
                 "use_te=false",
@@ -187,7 +187,7 @@ def test_sanity_convergence_ddp_non_streaming_dataset(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.load_dataset_kwargs.streaming=False",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
@@ -215,7 +215,7 @@ def test_sanity_convergence_fsdp2_non_streaming_dataset(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.load_dataset_kwargs.streaming=False",
                 "checkpoint.resume_from_checkpoint=false",  # Don't try to resume - fresh training
@@ -243,7 +243,7 @@ def test_sanity_ddp_with_lazy_tokenization(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.use_lazy_tokenization=True",
                 "num_train_steps=10",  # Just verify it runs, don't test convergence
@@ -273,7 +273,7 @@ def test_sanity_fsdp2_with_lazy_tokenization(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "dataset.use_lazy_tokenization=True",
                 "num_train_steps=10",  # Just verify it runs, don't test convergence
@@ -302,7 +302,7 @@ def test_sanity_convergence_ddp_with_sequence_packing(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "use_sequence_packing=true",
                 "dataset.max_seq_length=1024",
@@ -333,7 +333,7 @@ def test_sanity_convergence_fsdp2_with_sequence_packing(tmp_path, recipe_path):
         sanity_config = compose(
             config_name="L0_sanity",
             overrides=[
-                f"+wandb_init_args.dir={tmp_path}",
+                f"+wandb.dir={tmp_path}",
                 f"checkpoint.ckpt_dir={tmp_path}",
                 "use_sequence_packing=true",
                 "config_kwargs.attn_input_format=thd",
