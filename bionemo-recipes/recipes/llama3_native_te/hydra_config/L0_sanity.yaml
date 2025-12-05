@@ -34,7 +34,7 @@ dataset:
     streaming: True
 
 # WandB config
-wandb_init_args:
+wandb:
   name: "llama3_8B_genomic_sanity"
   mode: "offline"
 

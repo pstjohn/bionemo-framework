@@ -52,7 +52,7 @@ logger:
   frequency: 100
 
 # WandB configuration
-wandb_init_args:
+wandb:
   project: "llama3-genomic-convergence"
   name: "tiny-llama-convergence-test"
   mode: "online"
