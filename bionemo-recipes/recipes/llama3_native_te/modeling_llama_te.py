@@ -30,12 +30,12 @@ from transformers.utils.generic import TransformersKwargs
 
 
 AUTO_MAP = {
-    "AutoConfig": "llama3_nv.NVLlamaConfig",
-    "AutoModel": "llama3_nv.NVLlamaModel",
-    "AutoModelForCausalLM": "llama3_nv.NVLlamaForCausalLM",
-    "AutoModelForSequenceClassification": "llama3_nv.NVLlamaForSequenceClassification",
-    "AutoModelForQuestionAnswering": "llama3_nv.NVLlamaForQuestionAnswering",
-    "AutoModelForTokenClassification": "llama3_nv.NVLlamaForTokenClassification",
+    "AutoConfig": "modeling_llama_te.NVLlamaConfig",
+    "AutoModel": "modeling_llama_te.NVLlamaModel",
+    "AutoModelForCausalLM": "modeling_llama_te.NVLlamaForCausalLM",
+    "AutoModelForSequenceClassification": "modeling_llama_te.NVLlamaForSequenceClassification",
+    "AutoModelForQuestionAnswering": "modeling_llama_te.NVLlamaForQuestionAnswering",
+    "AutoModelForTokenClassification": "modeling_llama_te.NVLlamaForTokenClassification",
 }
 
 
@@ -48,13 +48,22 @@ class NVLlamaConfig(LlamaConfig):
 class NVLlamaPreTrainedModel(PreTrainedModel):
     """Base class for NVLlama models."""
 
-    config: NVLlamaConfig
+    config_class = NVLlamaConfig
     base_model_prefix = "model"
     _no_split_modules = ("TransformerLayer",)
     _skip_keys_device_placement = ("past_key_values",)
 
     def _init_weights(self, module):
-        """TE-specific weight initialization."""
+        """Initialize module weights.
+
+        This method ensures that models with randomly-initialized weights get the correct initial value distribution,
+        which can be critical for training stability. We also call this method directly when using meta-device init, as
+        the `to_empty` method does not initialize the weights. While the base Transformers model has a similar method,
+        we need to extend it to handle TE-specific modules.
+
+        Args:
+            module (nn.Module): The module to initialize the weights for.
+        """
         super()._init_weights(module)
 
         # Copied from transformers.modeling_utils.PreTrainedModel._init_weights
@@ -75,10 +84,25 @@ class NVLlamaPreTrainedModel(PreTrainedModel):
                 module.weight.data.fill_(1.0)
             if hasattr(module, "bias") and module.bias is not None:
                 module.bias.data.zero_()
+        if isinstance(module, transformer_engine.pytorch.RMSNorm):
+            if hasattr(module, "weight") and module.weight is not None:
+                module.weight.data.fill_(1.0)
         if isinstance(module, transformer_engine.pytorch.LayerNormLinear):
             module.layer_norm_weight.data.fill_(1.0)
             if module.layer_norm_bias is not None:
                 module.layer_norm_bias.data.zero_()
+        if isinstance(module, transformer_engine.pytorch.LayerNormMLP):
+            module.layer_norm_weight.data.fill_(1.0)
+            if hasattr(module, "fc1_weight") and module.fc1_weight is not None:
+                module.fc1_weight.data.normal_(mean=0.0, std=std)
+            if hasattr(module, "fc2_weight") and module.fc2_weight is not None:
+                module.fc2_weight.data.normal_(mean=0.0, std=std)
+            if hasattr(module, "fc1_bias") and module.fc1_bias is not None and module.fc1_bias.numel() > 0:
+                module.fc1_bias.data.zero_()
+            if hasattr(module, "fc2_bias") and module.fc2_bias is not None and module.fc2_bias.numel() > 0:
+                module.fc2_bias.data.zero_()
+        if isinstance(module, RotaryPositionEmbedding) and hasattr(module, "inv_freq"):
+            module.inv_freq = LlamaRotaryEmbedding(config=self.config).inv_freq.to(module.inv_freq.device)
 
 
 class NVLlamaModel(NVLlamaPreTrainedModel):
@@ -167,11 +191,12 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
 
         # This might be slower for BSHD + padding with fused attention backend. But it should be faster for the flash
         # attention backend.
+        self_attn_mask_type = "padding_causal"
         if should_pack_inputs:
             # Left-side padding is not supported in TE layers, so to make generation work with TE we dynamically convert
             # to THD-style inputs in our forward pass, and then convert back to BSHD for the output. This lets the
             # entire transformer stack run in THD mode.
-            assert attention_mask is not None, "Attention mask is required when using BSHD inputs."
+            assert attention_mask is not None, "Attention mask is required when packing BSHD inputs."
             batch_size = hidden_states.size(0)
             hidden_states, indices, cu_seqlens, max_seqlen, _ = _unpad_input(hidden_states, attention_mask)
             cu_seq_lens_q = cu_seq_lens_k = cu_seqlens
@@ -189,8 +214,10 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
             max_length_k = kwargs["max_length_k"]
 
         else:
-            assert attention_mask is not None, "Attention mask is required when using BSHD inputs."
-            attention_mask = attention_mask[:, None, None, :] < -1
+            if attention_mask is not None:
+                attention_mask = attention_mask[:, None, None, :] < -1
+            else:
+                self_attn_mask_type = "causal"
             cu_seq_lens_q = cu_seq_lens_k = None
             max_length_q = max_length_k = hidden_states.size(1)
 
@@ -219,6 +246,7 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
                 hidden_states,
                 attention_mask=None if self.config.attn_input_format == "thd" else attention_mask,
                 rotary_pos_emb=te_rope_emb,
+                self_attn_mask_type=self_attn_mask_type,
                 inference_params=past_key_values,
                 cu_seqlens_q=cu_seq_lens_q,
                 cu_seqlens_kv=cu_seq_lens_k,

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 
 import hydra
@@ -40,7 +41,7 @@ logger.setLevel(logging.INFO)
 
 
 @hydra.main(config_path="hydra_config", config_name="L0_sanity", version_base="1.2")
-def main(args: DictConfig) -> float | None:  # noqa: C901
+def main(args: DictConfig) -> float | None:
     """Train Llama3 with TE layers using FSDP2.
 
     Returns:
@@ -50,7 +51,7 @@ def main(args: DictConfig) -> float | None:  # noqa: C901
     dist_config = DistributedConfig()
     logger.info("Initializing distributed training: %s", dist_config)
     device = torch.device(f"cuda:{dist_config.local_rank}")
-    torch.distributed.init_process_group(backend="nccl", device_id=device)
+    torch.distributed.init_process_group(backend="cpu:gloo,cuda:nccl", device_id=device)
     torch.cuda.set_device(dist_config.local_rank)
 
     # Create a device mesh for FSDP.
@@ -74,7 +75,10 @@ def main(args: DictConfig) -> float | None:  # noqa: C901
     # Optionally use transformer engine to initialize only fp8 versions of weights by setting
     # `fp8_config.fp8_model_init_kwargs.enabled` to `True`, as opposed to using the default where both bfloat16 and fp8
     # versions of weights are kept.
-    with transformer_engine.pytorch.fp8_model_init(recipe=fp8_recipe, **args.fp8_config.fp8_model_init_kwargs):
+    with (
+        torch.device("meta") if args.use_meta_device else nullcontext(),
+        transformer_engine.pytorch.fp8_model_init(recipe=fp8_recipe, **args.fp8_config.fp8_model_init_kwargs),
+    ):
         model = model_class(config)
 
     logger.info("Initialized Model:\n%s", model)
@@ -85,15 +89,13 @@ def main(args: DictConfig) -> float | None:  # noqa: C901
         fully_shard(layer, mesh=device_mesh["dp"])
     fully_shard(model, mesh=device_mesh["dp"])
 
+    if args.use_meta_device:
+        model.to_empty(device=device)
+        model.apply(model._init_weights)
+
     # Create optimizer. Convert OmegaConf to regular dict to avoid serialization issues (BIONEMO-2873).
     optimizer = AdamW(model.parameters(), **OmegaConf.to_container(args.adamw_kwargs, resolve=True))  # type: ignore
     scheduler = get_cosine_annealing_schedule_with_warmup(optimizer, **args.lr_scheduler_kwargs)
-
-    if args.use_meta_device:
-        model.to_empty(device=device)
-        for module in model.modules():
-            if hasattr(module, "reset_parameters"):
-                module.reset_parameters()
 
     if args.use_sequence_packing:
         train_dataloader, dataset_or_sampler = create_thd_dataloader(dist_config, **args.dataset)
@@ -115,6 +117,7 @@ def main(args: DictConfig) -> float | None:  # noqa: C901
             ckpt_path=ckpt_path,
             dist_config=dist_config,
             dataloader=train_dataloader,
+            process_group=device_mesh.get_group("dp"),
         )
         logger.info(f"Checkpoint loaded, resuming from step {start_step}, epoch {epoch}")
     else:
@@ -165,6 +168,9 @@ def main(args: DictConfig) -> float | None:  # noqa: C901
                     epoch=epoch,
                     dist_config=dist_config,
                     dataloader=train_dataloader if args.dataset.use_stateful_dataloader else None,
+                    process_group=device_mesh.get_group("dp"),
+                    max_checkpoints=args.checkpoint.max_checkpoints,
+                    async_save=args.checkpoint.async_save,
                 )
 
             step += 1
