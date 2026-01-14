@@ -85,7 +85,7 @@ def get_te_model_checkpoint(tmp_path):
         The path to the saved model checkpoint.
     """
     # Use the 1B model for practical testing (8B model requires too much memory)
-    model_hf = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct", torch_dtype=torch.bfloat16)
+    model_hf = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct", dtype=torch.bfloat16)
     model_te = convert_llama_hf_to_te(model_hf, attn_input_format="bshd", self_attn_mask_type="causal")
     model_te.save_pretrained(tmp_path / "te_model_checkpoint")
     return tmp_path / "te_model_checkpoint"
@@ -256,7 +256,7 @@ if __name__ == "__main__":
         )
         # Re-initialize the model on the new device (fresh instance, no shared graph)
         model = NVLlamaForCausalLM.from_pretrained(
-            model_ckpt, attn_input_format="bshd", self_attn_mask_type="causal", torch_dtype=torch.bfloat16
+            model_ckpt, attn_input_format="bshd", self_attn_mask_type="causal", dtype=torch.bfloat16
         )
         model = model.to(device=device)
         model.train()  # Set to training mode to enable gradient computation
