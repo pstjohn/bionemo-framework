@@ -17,15 +17,12 @@ import logging
 
 import datasets
 import datasets.distributed
-import torch
 from torch.utils.data import DataLoader, DistributedSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import AutoTokenizer
 from transformers.data.data_collator import DataCollatorForLanguageModeling
 
 from collator import (
-    ContextParallelDataLoaderWrapper,
-    DataCollatorForContextParallel,
     DataCollatorWithFlattening,
     TokenPackingDataset,
 )
@@ -102,6 +99,11 @@ def create_tokenized_dataset(
         remove_columns=[text_column],
     )
 
+    # Even in THD mode, we use a base MLM collator that requires a padding token to be set.
+    if tokenizer.pad_token is None:
+        logger.warning(f"Tokenizer does not have a padding token. Setting it to the EOS token: {tokenizer.eos_token}")
+        tokenizer.pad_token = tokenizer.eos_token
+
     return tokenized_dataset, tokenizer
 
 
@@ -120,7 +122,7 @@ def create_bshd_dataloader(
     text_column: str = "text",
     uppercase_labels: bool = False,
     mask_degenerate_bases: bool = False,
-    pad_to_multiple_of: int | None = None,
+    pad_sequences_to_be_divisible_by: int | None = None,
 ):
     """Create a BSHD dataloader for llama3 pre-training.
 
@@ -139,7 +141,8 @@ def create_bshd_dataloader(
         text_column: Name of the column containing text sequences (default: "text").
         uppercase_labels: Whether to uppercase labels (genomic masking). Default: False.
         mask_degenerate_bases: Whether to mask non-ACGT bases (genomic masking). Default: False.
-        pad_to_multiple_of: The number to pad sequences to be divisible by, required for FP8 training. Default: 16.
+        pad_sequences_to_be_divisible_by: The number to pad sequences to be divisible by, required for FP8 training.
+            Default: None.
 
     Returns:
         A tuple of (dataloader, dataset_or_sampler).
@@ -169,7 +172,7 @@ def create_bshd_dataloader(
     base_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
         mlm=False,  # Causal language modeling
-        pad_to_multiple_of=pad_to_multiple_of,
+        pad_to_multiple_of=pad_sequences_to_be_divisible_by,
     )
 
     # Wrap with genomic collator if masking options are enabled
@@ -300,40 +303,3 @@ def create_thd_dataloader(
     )
 
     return train_dataloader, tokenized_dataset
-
-
-def create_cp_dataloader(
-    *args,
-    cp_mesh: torch.distributed.device_mesh.DeviceMesh,
-    **kwargs,
-):
-    """Create a Context-parallel aware dataloader that automatically handles sharding between ranks.
-
-    Wraps the output of `create_thd_dataloader` to make it context parallel aware.
-
-    Args:
-        *args: Arguments to pass to `create_thd_dataloader`.
-        cp_mesh: The context parallel mesh.
-        **kwargs: Keyword arguments to pass to `create_thd_dataloader`.
-
-    Returns:
-        A tuple of (dataloader, dataset_or_sampler).
-    """
-    # Ensure pad_sequences_to_be_divisible_by is passed to create_thd_dataloader
-    if kwargs.get("pad_sequences_to_be_divisible_by", None) is None:
-        logger.info("pad_sequences_to_be_divisible_by is not provided, using cp_mesh.size() * 2")
-        kwargs["pad_sequences_to_be_divisible_by"] = cp_mesh.size() * 2
-
-    if cp_mesh.get_local_rank() == 0:
-        train_dataloader, tokenized_dataset = create_thd_dataloader(*args, **kwargs)
-
-        train_dataloader.collate_fn = DataCollatorForContextParallel(
-            collator=train_dataloader.collate_fn,
-            cp_world_size=cp_mesh.size(),
-        )
-
-    else:
-        train_dataloader = None
-        tokenized_dataset = None
-
-    return ContextParallelDataLoaderWrapper(train_dataloader, cp_mesh), tokenized_dataset
