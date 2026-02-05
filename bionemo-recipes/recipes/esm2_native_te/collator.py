@@ -87,6 +87,8 @@ class DataCollatorWithFlattening:
     return_position_ids: bool = False
     pad_to_multiple_of: int | None = None
     pad_sequences_to_be_divisible_by: int | None = None
+    separator_label: int | None = None
+    """A label to insert between sequences, typically should be -100 for causal LM."""
 
     def __post_init__(self):
         """Ensure padding options are not used together."""
@@ -161,6 +163,9 @@ class DataCollatorWithFlattening:
         # Get the masked input_ids and labels from the BSHD batch.
         masked_input_ids = bshd_batch["input_ids"][bshd_batch["attention_mask"].bool()].unsqueeze(0)
         masked_labels = bshd_batch["labels"][bshd_batch["attention_mask"].bool()].unsqueeze(0)
+
+        if self.separator_label is not None:
+            masked_labels[:, packed_batch["cu_seq_lens_q"][1:-1]] = self.separator_label
 
         # Update the packed batch with the masked input_ids and labels.
         packed_batch["input_ids"] = masked_input_ids
@@ -289,6 +294,12 @@ class DataCollatorForContextParallel:
     collator: DataCollator
     cp_world_size: int
     qkv_format: str = "thd"
+    is_causal_lm: bool = False
+    """Whether the collator is for a causal language model.
+
+    If True, the labels will be shifted before being split into CP shards, and will be returned in the `shift_labels`
+    field.
+    """
 
     def __call__(self, features) -> list[dict[str, Any]]:
         """Process batches of data and create shards for each context parallelism rank.
@@ -300,6 +311,10 @@ class DataCollatorForContextParallel:
             A list of dictionaries, each containing a shard of the batch for a given context parallelism rank.
         """
         batch = self.collator(features)
+
+        if self.is_causal_lm:
+            labels = torch.nn.functional.pad(batch["labels"], (0, 1), value=-100)
+            batch["labels"] = labels[..., 1:].contiguous()
 
         combined_batch = []
         for cp_rank in range(self.cp_world_size):
@@ -313,7 +328,11 @@ class DataCollatorForContextParallel:
             )
             batch_shard = dict(batch)
             batch_shard["input_ids"] = input_ids_sharded
-            batch_shard["labels"] = labels_sharded
+            if self.is_causal_lm:
+                batch_shard["shift_labels"] = labels_sharded
+                batch_shard["labels"] = None
+            else:
+                batch_shard["labels"] = labels_sharded
             # Now determine the max length of the sequence.
             if self.qkv_format == "thd":
                 seqlens_q = batch_shard["cu_seq_lens_q_padded"][1:] - batch_shard["cu_seq_lens_q_padded"][:-1]
@@ -767,7 +786,8 @@ class BatchType(TypedDict):
     """The fields in the batch dictionary fo THD context parallel."""
 
     input_ids: torch.Tensor
-    labels: torch.Tensor
+    labels: torch.Tensor | None
+    shift_labels: torch.Tensor | None
     cu_seq_lens_q: torch.Tensor
     cu_seq_lens_k: torch.Tensor
     cu_seq_lens_q_padded: torch.Tensor

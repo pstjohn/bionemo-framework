@@ -273,6 +273,7 @@ def create_thd_dataloader(
     data_collator = DataCollatorWithFlattening(
         collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         pad_sequences_to_be_divisible_by=pad_sequences_to_be_divisible_by,
+        separator_label=-100,
     )
 
     if uppercase_labels or mask_degenerate_bases:
