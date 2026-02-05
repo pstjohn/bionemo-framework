@@ -56,6 +56,7 @@ class DataCollatorWithFlattening:
         return_position_ids (bool): Whether to return position ids (default False).
         pad_to_multiple_of (int, optional): If set, pads the total sequence length to be divisible by this number.
         pad_sequences_to_be_divisible_by (int, optional): If set, each individual sequence is padded to this value.
+    separator_label (int, optional): A label to insert between sequences, typically should be -100 for causal LM.
 
     Example:
         >>> from transformers import AutoTokenizer, DataCollatorForLanguageModeling
@@ -88,7 +89,6 @@ class DataCollatorWithFlattening:
     pad_to_multiple_of: int | None = None
     pad_sequences_to_be_divisible_by: int | None = None
     separator_label: int | None = None
-    """A label to insert between sequences, typically should be -100 for causal LM."""
 
     def __post_init__(self):
         """Ensure padding options are not used together."""
