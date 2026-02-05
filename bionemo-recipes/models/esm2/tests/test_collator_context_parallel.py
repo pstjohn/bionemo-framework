@@ -946,8 +946,8 @@ def test_data_collator_for_context_parallel_thd(tokenizer):
 
     assert len(result) == cp_world_size, f"Expected list of size {cp_world_size}, got {len(result)}"
 
-    # Define the required keys from BatchType
-    required_keys = set(BatchType.__annotations__.keys())
+    # Define the required keys from BatchType. Shift labels wont appear when we are not using a causal language model.
+    required_keys = set(BatchType.__annotations__.keys()) - {"shift_labels"}
 
     # Assert each shard has all required keys
     for cp_rank, shard in enumerate(result):

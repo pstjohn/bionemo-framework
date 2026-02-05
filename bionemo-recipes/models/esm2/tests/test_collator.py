@@ -199,7 +199,7 @@ def test_data_collator_with_flattening_with_labels_causal_lm(tokenizer):
         torch.testing.assert_close(flattened_seq, original_seq)
         start_idx = end_idx
 
-    expected_labels = torch.tensor([[0, 5, 6, 7, 2, -100, 0, 8, 9, 10, 11, -100, 0, 12, 13, 2]], dtype=torch.int64)
+    expected_labels = torch.tensor([[0, 5, 6, 7, 2, -100, 8, 9, 10, 11, 2, -100, 12, 13, 2]], dtype=torch.int64)
     torch.testing.assert_close(labels_tensor, expected_labels)
 
 
