@@ -290,6 +290,22 @@ class DataCollatorForContextParallel:
 
     The shards are then typically sent to the ContextParallelDataLoaderWrapper which will scatter them to the
     appropriate GPUs.
+
+    Note:
+        When used with the ContextParallelDataLoaderWrapper and both context parallelism and tensor parallelism are
+        used, we assume that the cp_tp mesh is provided as a flattened mesh, with context parallelism as the first (row)
+        dimension, and tensor parallelism as the second (column) dimension. The flattened mesh will therefore look like:
+        [(cp_rank_0, tp_rank_0), (cp_rank_0, tp_rank_1), ..., (cp_rank_1, tp_rank_0), (cp_rank_1, tp_rank_1), ...] and
+        this collator prepares a flattened, CP-aware and TP-replicated batch accordingly.
+
+    Args:
+        collator: The collator to use for the batch.
+        cp_world_size: The number of context parallelism ranks.
+        tp_world_size: The number of tensor parallelism ranks.
+        qkv_format: The format of the query-key-value (QKV) tensor.
+        is_causal_lm: Whether the collator is for a causal language model. If True, the labels will be shifted before
+            being split into CP shards, and will be returned in the `shift_labels` field.
+
     """
 
     collator: DataCollator
@@ -297,11 +313,6 @@ class DataCollatorForContextParallel:
     tp_world_size: int | None = None
     qkv_format: str = "thd"
     is_causal_lm: bool = False
-    """Whether the collator is for a causal language model.
-
-    If True, the labels will be shifted before being split into CP shards, and will be returned in the `shift_labels`
-    field.
-    """
 
     def __call__(self, features) -> list[dict[str, Any]]:
         """Process batches of data and create shards for each context parallelism rank.
@@ -376,8 +387,9 @@ class ContextParallelDataLoaderWrapper:
 
         Args:
             dataloader: The dataloader to use.
-            cp_tp_mesh: The context parallel mesh, or combined context parallel and tensor parallel mesh.
-
+            cp_tp_mesh: The context parallel mesh, or combined context parallel and tensor parallel mesh. This should be
+                a flattened mesh, with context parallelism as the first (row) dimension, and tensor parallelism as the
+                second (column) dimension. See the `DataCollatorForContextParallel` class for more details.
         """
         if cp_tp_mesh.get_local_rank() == 0:
             assert dataloader is not None, "dataloader must be provided on rank 0"
