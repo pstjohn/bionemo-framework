@@ -738,7 +738,6 @@ def test_cp_dataloader(tokenizer_path):
             "input_ids",
             "cu_seq_lens_q",
             "cu_seq_lens_k",
-            "attention_mask",
             "labels",
             "cu_seq_lens_q_padded",
             "cu_seq_lens_k_padded",
@@ -751,7 +750,7 @@ def test_cp_dataloader(tokenizer_path):
 
 @requires_multi_gpu
 @pytest.mark.parametrize("dataset_path", ["dlcm_sanity_dataset.parquet", "test_genomic_sequences.parquet"])
-def test_cp_dataloader_multi_gpu(recipe_path, dataset_path):
+def test_cp_dataloader_multi_gpu(recipe_path, dataset_path, unused_tcp_port):
     """Tests that the CP dataloader works correctly with multiple GPUs.
 
     The `test_genomic_sequences.parquet` dataset is too small to even fill a single batch with the default context
@@ -762,6 +761,8 @@ def test_cp_dataloader_multi_gpu(recipe_path, dataset_path):
 
     cmd = [
         "torchrun",
+        "--rdzv-backend=c10d",
+        f"--rdzv-endpoint=localhost:{unused_tcp_port}",
         "--nproc_per_node=2",
         "tests/test_dataset.py",
         "--dataset_path",

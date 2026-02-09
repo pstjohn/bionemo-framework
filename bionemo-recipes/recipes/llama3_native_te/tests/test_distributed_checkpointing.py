@@ -176,7 +176,7 @@ def test_checkpoint_save_and_load_single_process_ddp(recipe_path, tmp_path):
 
 
 @requires_multi_gpu
-def test_checkpoint_save_and_load_two_processes_ddp(recipe_path, tmp_path):
+def test_checkpoint_save_and_load_two_processes_ddp(recipe_path, tmp_path, unused_tcp_port):
     """Test checkpoint save/resume functionality for DDP with two processes.
 
     This test validates:
@@ -266,6 +266,8 @@ def test_checkpoint_save_and_load_two_processes_ddp(recipe_path, tmp_path):
     cmd_phase2 = [
         "torchrun",
         "--nproc_per_node=2",
+        "--rdzv-backend=c10d",
+        f"--rdzv-endpoint=localhost:{unused_tcp_port}",
         str(train_script),
         f"checkpoint.ckpt_dir={temp_dir}",
         "num_train_steps=15",
@@ -435,7 +437,7 @@ def test_checkpoint_save_and_load_single_process_fsdp2(recipe_path, tmp_path):
 
 
 @requires_multi_gpu
-def test_checkpoint_save_and_load_two_processes_fsdp2(recipe_path, tmp_path):
+def test_checkpoint_save_and_load_two_processes_fsdp2(recipe_path, tmp_path, unused_tcp_port):
     """Test checkpoint save/resume functionality for FSDP2 with two processes.
 
     This test validates:
@@ -507,6 +509,8 @@ def test_checkpoint_save_and_load_two_processes_fsdp2(recipe_path, tmp_path):
     cmd_phase2 = [
         "torchrun",
         "--nproc_per_node=2",
+        "--rdzv-backend=c10d",
+        f"--rdzv-endpoint=localhost:{unused_tcp_port}",
         str(train_script),
         f"checkpoint.ckpt_dir={temp_dir}",
         "num_train_steps=15",
@@ -653,7 +657,7 @@ def test_checkpoint_save_and_load_single_process_fsdp2_with_context_parallelism(
 
 
 @requires_multi_gpu
-def test_checkpoint_save_and_load_two_processes_fsdp2_with_context_parallelism(recipe_path, tmp_path):
+def test_checkpoint_save_and_load_two_processes_fsdp2_with_context_parallelism(recipe_path, tmp_path, unused_tcp_port):
     """Test checkpoint save/resume functionality for FSDP2 with two processes.
 
     This test validates:
@@ -680,6 +684,8 @@ def test_checkpoint_save_and_load_two_processes_fsdp2_with_context_parallelism(r
     cmd_phase1 = [
         "torchrun",
         "--nproc_per_node=2",
+        "--rdzv-backend=c10d",
+        f"--rdzv-endpoint=localhost:{unused_tcp_port}",
         str(train_script),
         f"checkpoint.ckpt_dir={temp_dir}",
         "num_train_steps=10",
@@ -727,6 +733,8 @@ def test_checkpoint_save_and_load_two_processes_fsdp2_with_context_parallelism(r
     cmd_phase2 = [
         "torchrun",
         "--nproc_per_node=2",
+        "--rdzv-backend=c10d",
+        f"--rdzv-endpoint=localhost:{unused_tcp_port}",
         str(train_script),
         f"checkpoint.ckpt_dir={temp_dir}",
         "num_train_steps=15",
@@ -925,7 +933,7 @@ def test_final_model_save_fsdp2(recipe_path, tmp_path):
 
 
 @requires_multi_gpu
-def test_scheduler_resume_two_gpu(recipe_path, tmp_path):
+def test_scheduler_resume_two_gpu(recipe_path, tmp_path, unused_tcp_port):
     """Test that learning rate scheduler resumes correctly with multi-GPU training.
 
     This test validates:
@@ -951,6 +959,8 @@ def test_scheduler_resume_two_gpu(recipe_path, tmp_path):
     cmd_phase1 = [
         "torchrun",
         "--nproc_per_node=2",
+        "--rdzv-backend=c10d",
+        f"--rdzv-endpoint=localhost:{unused_tcp_port}",
         str(train_script),
         f"checkpoint.ckpt_dir={temp_dir}",
         "num_train_steps=10",
@@ -975,6 +985,8 @@ def test_scheduler_resume_two_gpu(recipe_path, tmp_path):
     cmd_phase2 = [
         "torchrun",
         "--nproc_per_node=2",
+        "--rdzv-backend=c10d",
+        f"--rdzv-endpoint=localhost:{unused_tcp_port}",
         str(train_script),
         f"checkpoint.ckpt_dir={temp_dir}",
         "num_train_steps=15",

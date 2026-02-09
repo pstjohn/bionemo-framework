@@ -74,7 +74,7 @@ def run_train_cmd(cmd, recipe_path):
 
 
 @requires_multi_gpu
-def test_multi_gpu_train_ddp(tmp_path, recipe_path):
+def test_multi_gpu_train_ddp(recipe_path, unused_tcp_port):
     """Test DDP training on 2 GPUs.
 
     This test validates:
@@ -88,6 +88,8 @@ def test_multi_gpu_train_ddp(tmp_path, recipe_path):
     run_train_cmd(
         [
             "torchrun",
+            "--rdzv-backend=c10d",
+            f"--rdzv-endpoint=localhost:{unused_tcp_port}",
             "--nproc_per_node",
             "2",  # 2 processes = 2 GPUs
             "--standalone",  # Single node mode
@@ -101,7 +103,7 @@ def test_multi_gpu_train_ddp(tmp_path, recipe_path):
 
 
 @requires_multi_gpu
-def test_multi_gpu_train_fsdp2(tmp_path, recipe_path):
+def test_multi_gpu_train_fsdp2(recipe_path, unused_tcp_port):
     """Test FSDP2 training on 2 GPUs.
 
     This test validates:
@@ -128,7 +130,7 @@ def test_multi_gpu_train_fsdp2(tmp_path, recipe_path):
 
 
 @requires_multi_gpu
-def test_multi_gpu_train_ddp_with_checkpointing(tmp_path, recipe_path):
+def test_multi_gpu_train_ddp_with_checkpointing(tmp_path, recipe_path, unused_tcp_port):
     """Test DDP training on 2 GPUs with checkpoint saving.
 
     This test validates:
@@ -139,6 +141,8 @@ def test_multi_gpu_train_ddp_with_checkpointing(tmp_path, recipe_path):
     run_train_cmd(
         [
             "torchrun",
+            "--rdzv-backend=c10d",
+            f"--rdzv-endpoint=localhost:{unused_tcp_port}",
             "--nproc_per_node",
             "2",
             "--standalone",
@@ -160,7 +164,7 @@ def test_multi_gpu_train_ddp_with_checkpointing(tmp_path, recipe_path):
 
 
 @requires_multi_gpu
-def test_multi_gpu_train_fsdp2_with_checkpointing(tmp_path, recipe_path):
+def test_multi_gpu_train_fsdp2_with_checkpointing(tmp_path, recipe_path, unused_tcp_port):
     """Test FSDP2 training on 2 GPUs with checkpoint saving.
 
     This test validates:
@@ -171,6 +175,8 @@ def test_multi_gpu_train_fsdp2_with_checkpointing(tmp_path, recipe_path):
     run_train_cmd(
         [
             "torchrun",
+            "--rdzv-backend=c10d",
+            f"--rdzv-endpoint=localhost:{unused_tcp_port}",
             "--nproc_per_node",
             "2",
             "--standalone",
@@ -192,10 +198,12 @@ def test_multi_gpu_train_fsdp2_with_checkpointing(tmp_path, recipe_path):
 
 
 @requires_multi_gpu
-def test_multi_gpu_train_te_fsdp2_cp_bshd(tmp_path, recipe_path):
+def test_multi_gpu_train_te_fsdp2_cp_bshd(tmp_path, recipe_path, unused_tcp_port):
     run_train_cmd(
         [
             "torchrun",
+            "--rdzv-backend=c10d",
+            f"--rdzv-endpoint=localhost:{unused_tcp_port}",
             "--nproc_per_node=2",
             "--standalone",
             "train_fsdp2_cp.py",
@@ -215,10 +223,12 @@ def test_multi_gpu_train_te_fsdp2_cp_bshd(tmp_path, recipe_path):
 
 @requires_multi_gpu
 @requires_datacenter_hardware
-def test_multi_gpu_train_te_fsdp2_cp_thd(tmp_path, recipe_path):
+def test_multi_gpu_train_te_fsdp2_cp_thd(tmp_path, recipe_path, unused_tcp_port):
     run_train_cmd(
         [
             "torchrun",
+            "--rdzv-backend=c10d",
+            f"--rdzv-endpoint=localhost:{unused_tcp_port}",
             "--nproc_per_node=2",
             "--standalone",
             "train_fsdp2_cp.py",
@@ -241,7 +251,7 @@ nsys_available = subprocess.run(["which", "nsys"], check=False, capture_output=T
 
 @pytest.mark.skipif(not nsys_available, reason="nsys not available in environment")
 @requires_multi_gpu
-def test_nsight_profiler_trace_generation_two_gpu(tmp_path, recipe_path):
+def test_nsight_profiler_trace_generation_two_gpu(tmp_path, recipe_path, unused_tcp_port):
     """Test that Nsight profiler is configured correctly and generates trace metadata.
 
     This test validates:
@@ -264,6 +274,8 @@ def test_nsight_profiler_trace_generation_two_gpu(tmp_path, recipe_path):
             "--capture-range=cudaProfilerApi",
             "--capture-range-end=stop",
             "torchrun",
+            "--rdzv-backend=c10d",
+            f"--rdzv-endpoint=localhost:{unused_tcp_port}",
             "--standalone",
             "--nproc_per_node=2",
             "train_ddp.py",
