@@ -257,7 +257,7 @@ def create_cp_dataloader(
 
         train_dataloader.collate_fn = DataCollatorForContextParallel(
             collator=train_dataloader.collate_fn,
-            cp_world_size=cp_mesh.size(),
+            device_mesh=cp_mesh,
         )
 
     else:

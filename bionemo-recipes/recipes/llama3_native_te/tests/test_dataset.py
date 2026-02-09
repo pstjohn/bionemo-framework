@@ -720,7 +720,7 @@ def test_cp_dataloader(tokenizer_path):
 
         train_dataloader.collate_fn = DataCollatorForContextParallel(
             collator=train_dataloader.collate_fn,
-            cp_world_size=cp_mesh.size(),
+            device_mesh=cp_mesh,
             is_causal_lm=True,
         )
     else:
@@ -818,7 +818,7 @@ if __name__ == "__main__":
 
         train_dataloader.collate_fn = DataCollatorForContextParallel(
             collator=train_dataloader.collate_fn,
-            cp_world_size=cp_mesh.size(),
+            device_mesh=cp_mesh,
             is_causal_lm=True,
         )
     else:
