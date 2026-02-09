@@ -303,8 +303,8 @@ class DataCollatorForContextParallel:
 
     Args:
         collator: The collator to use for the batch.
-        device_mesh: The device mesh with named dimensions. Must contain a "cp" dimension.
-            May optionally contain a "tp" dimension for tensor parallelism.
+        device_mesh: The device mesh with named dimensions. Must contain either a "cp" dimension for context parallelism
+            and/or a "tp" dimension for tensor parallelism.
         qkv_format: The format of the query-key-value (QKV) tensor.
         is_causal_lm: Whether the collator is for a causal language model. If True, the labels will be shifted before
             being split into CP shards, and will be returned in the `shift_labels` field.
@@ -402,21 +402,17 @@ class DataCollatorForContextParallel:
 
 
 class ContextParallelDataLoaderWrapper:
-    """A dataloader that is aware of context parallelism."""
+    """A dataloader that is aware of context and tensor parallelism."""
 
     def __init__(
         self,
         dataloader: torch.utils.data.DataLoader | None,
         cp_tp_mesh: torch.distributed.device_mesh.DeviceMesh,
     ):
-        """A dataloader wrapper that distributes the data across the context parallelism group.
+        """A dataloader wrapper that distributes the data across the context and tensor parallelism groups.
 
-        This class will get the batch from the dataloader on CP rank 0, and then determine the shards for all the
-        different CP group members. Then it will scatter the shards to the different CP group members. The shards are
-        then returned to the caller for the current CP rank.
-
-        If tensor parallelism is also being used, the data will be replicated across the TP dimension for each CP rank.
-        This should be provided using a flattened cp/tp mesh.
+        This class materializes a single dataloader for each data parallel mesh rank, and splits / replicates the data
+        from this dataloader across the context and tensor parallelism groups.
 
         Args:
             dataloader: The dataloader to use.
@@ -431,30 +427,30 @@ class ContextParallelDataLoaderWrapper:
         else:
             assert dataloader is None, "Dataloader on non-rank 0 will not be used"
 
-        self.cp_rank = cp_tp_mesh.get_local_rank()
-        self.cp_group = cp_tp_mesh.get_group()
-        self.num_cp_ranks = cp_tp_mesh.size()
+        self.cp_tp_rank = cp_tp_mesh.get_local_rank()
+        self.cp_tp_group = cp_tp_mesh.get_group()
+        self.num_cp_tp_ranks = cp_tp_mesh.size()
         self._iterator = None
 
         logger.debug(
             "Created ContextParallelDataLoaderWrapper on global rank %s, cp rank %s",
             torch.distributed.get_rank() if torch.distributed.is_initialized() else "<not initialized>",
-            self.cp_rank,
+            self.cp_tp_rank,
         )
 
     def __iter__(self):
         """Make the dataloader iterable."""
-        if self.cp_rank == 0:
+        if self.cp_tp_rank == 0:
             self._iterator = iter(self.dataloader)  # < --- collator output.
         return self
 
     def __next__(self):
         """Get the batch from the dataloader for the current CP rank."""
-        batch = self._send_data_to_cp_ranks()
+        batch = self._send_data_to_cp_tp_ranks()
         return batch
 
-    def _send_data_to_cp_ranks(self):
-        """Send data to all the CP ranks.
+    def _send_data_to_cp_tp_ranks(self):
+        """Send data to all the CP/TP ranks.
 
         This function will get the batch from the dataloader on CP rank 0, and then determine
         the shards for all the different CP group members.
@@ -476,17 +472,17 @@ class ContextParallelDataLoaderWrapper:
             None
 
         Returns:
-            batch: The batch for the current CP rank.
+            batch: The batch for the current CP/TP rank.
 
         """
         try:
-            combined_batch = next(self._iterator) if self.cp_rank == 0 else None
+            combined_batch = next(self._iterator) if self.cp_tp_rank == 0 else None
         except StopIteration as ex:
             # If we encounter a StopIteration in the dataloader, we want to raise this error on all the CP ranks, so
             # that the dataloader can be restarted.
-            combined_batch = [ex] * self.num_cp_ranks
+            combined_batch = [ex] * self.num_cp_tp_ranks
 
-        batch_on_this_rank = _scatter_batch_to_cp_ranks(combined_batch, self.cp_group)
+        batch_on_this_rank = _scatter_batch_to_cp_tp_ranks(combined_batch, self.cp_tp_group)
 
         if isinstance(batch_on_this_rank, StopIteration):
             raise batch_on_this_rank
@@ -495,7 +491,7 @@ class ContextParallelDataLoaderWrapper:
 
     def state_dict(self):
         """Get the state dict by delegating to the dataloader."""
-        if self.cp_rank != 0:
+        if self.cp_tp_rank != 0:
             return {}
         elif hasattr(self.dataloader, "state_dict"):
             return {"dataloader": self.dataloader.state_dict()}
@@ -508,7 +504,7 @@ class ContextParallelDataLoaderWrapper:
 
     def load_state_dict(self, state_dict):
         """Load the state dict by delegating to the dataloader."""
-        if self.cp_rank != 0:
+        if self.cp_tp_rank != 0:
             return
         elif hasattr(self.dataloader, "load_state_dict"):
             self.dataloader.load_state_dict(state_dict["dataloader"])
@@ -522,7 +518,7 @@ class ContextParallelDataLoaderWrapper:
     @property
     def num_workers(self):
         """Get the number of workers of the dataloader."""
-        if self.cp_rank != 0:
+        if self.cp_tp_rank != 0:
             return 0
         else:
             return self.dataloader.num_workers
@@ -856,15 +852,15 @@ class BatchType(TypedDict):
     pad_between_seqs: bool
 
 
-def _scatter_batch_to_cp_ranks(
-    all_batches: list[BatchType] | list[StopIteration], cp_group: torch.distributed.ProcessGroup | None = None
+def _scatter_batch_to_cp_tp_ranks(
+    all_batches: list[BatchType] | list[StopIteration], cp_tp_group: torch.distributed.ProcessGroup | None = None
 ) -> BatchType | StopIteration:
     """Scatter a batch to all the CP ranks.
 
     Args:
         all_batches (list[BatchType] | list[StopIteration]): A list of already-sharded batches to scatter to the CP/TP
             ranks.
-        cp_group (torch.distributed.ProcessGroup | None): The process group to scatter the batches to.
+        cp_tp_group (torch.distributed.ProcessGroup | None): The process group to scatter the batches to.
 
     Returns:
         BatchType | StopIteration: The batch on this rank.
@@ -874,7 +870,7 @@ def _scatter_batch_to_cp_ranks(
     torch.distributed.scatter_object_list(
         scatter_object_output_list=scatter_object_output_list,
         scatter_object_input_list=all_batches,
-        group=cp_group,
+        group=cp_tp_group,
         group_src=0,
     )
     return scatter_object_output_list[0]

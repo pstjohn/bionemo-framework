@@ -782,21 +782,18 @@ def _run_test_tp_only(qkv_format: str):
 
     # TP=2, CP=1 configuration
     tp_size = dist_config.world_size
-    cp_size = 1
 
-    # Create a 2D mesh with CP=1, TP=2
+    # Create a 1D mesh with TP only (no CP dimension)
     device_mesh = init_device_mesh(
         "cpu",
-        mesh_shape=(cp_size, tp_size),
-        mesh_dim_names=("cp", "tp"),
+        mesh_shape=(tp_size,),
+        mesh_dim_names=("tp",),
     )
 
     # Flatten the CP+TP mesh for the dataloader wrapper
-    cp_tp_mesh = device_mesh[("cp", "tp")]._flatten("cp_tp")
-    flat_rank = cp_tp_mesh.get_local_rank()
+    flat_rank = device_mesh.get_local_rank()
 
-    # Get individual CP and TP ranks
-    cp_rank = device_mesh.get_local_rank("cp")
+    # Get individual TP rank (no CP dimension in this mesh)
     tp_rank = device_mesh.get_local_rank("tp")
 
     # Create tokenizer and collator with TP replication
@@ -824,7 +821,7 @@ def _run_test_tp_only(qkv_format: str):
     expected_sharded_batches = expected_list[0]
 
     # Create the wrapper
-    wrapper = ContextParallelDataLoaderWrapper(dataloader=dataloader, cp_tp_mesh=cp_tp_mesh)
+    wrapper = ContextParallelDataLoaderWrapper(dataloader=dataloader, cp_tp_mesh=device_mesh)
 
     # Iterate and verify
     iter(wrapper)
@@ -838,12 +835,12 @@ def _run_test_tp_only(qkv_format: str):
     torch.testing.assert_close(
         batch_on_rank["input_ids"],
         expected_batch["input_ids"],
-        msg=f"Flat rank {flat_rank} (cp={cp_rank}, tp={tp_rank}): input_ids mismatch",
+        msg=f"Flat rank {flat_rank} (tp={tp_rank}): input_ids mismatch",
     )
     torch.testing.assert_close(
         batch_on_rank["labels"],
         expected_batch["labels"],
-        msg=f"Flat rank {flat_rank} (cp={cp_rank}, tp={tp_rank}): labels mismatch",
+        msg=f"Flat rank {flat_rank} (tp={tp_rank}): labels mismatch",
     )
 
     # Verify that all TP ranks within the same CP group have identical data
