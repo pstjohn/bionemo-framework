@@ -49,7 +49,8 @@ class PerfLogger:
         self._dist_config = dist_config
         self._run_config = OmegaConf.to_container(args, resolve=True, throw_on_missing=True)
 
-        self.min_loss = torch.tensor(float("inf"), device=torch.device(f"cuda:{dist_config.local_rank}"))
+        self._device = torch.device(f"cuda:{dist_config.local_rank}")
+        self.min_loss = torch.tensor(float("inf"), device=self._device)
 
         self.logging_frequency = args.logger.frequency
 
@@ -67,7 +68,7 @@ class PerfLogger:
 
         self.metrics = torchmetrics.MetricCollection(metrics_dict)
         # We move metrics to a GPU device so we can use torch.distributed to aggregate them before logging.
-        self.metrics.to(torch.device(f"cuda:{dist_config.local_rank}"))
+        self.metrics.to(self._device)
         self.previous_step_time = time.perf_counter()
         self._profiler = None
 
@@ -85,10 +86,8 @@ class PerfLogger:
 
         # Gradient accumulation tracking
         self.num_tokens = 0
-        self.num_unpadded_tokens = torch.tensor(
-            0, dtype=torch.int64, device=torch.device(f"cuda:{dist_config.local_rank}")
-        )
-        self.running_loss = torch.tensor(0.0, device=torch.device(f"cuda:{dist_config.local_rank}"))
+        self.num_unpadded_tokens = torch.tensor(0, dtype=torch.int64, device=self._device)
+        self.running_loss = torch.tensor(0.0, device=self._device)
         self.grad_acc_step_count = 0
 
         # Whether to step debug_api.step() after each step
@@ -145,7 +144,9 @@ class PerfLogger:
 
             avg_loss = self.running_loss / self.grad_acc_step_count
             self.min_loss = torch.minimum(self.min_loss, avg_loss)
-            step_time, self.previous_step_time = time.perf_counter() - self.previous_step_time, time.perf_counter()
+            now = time.perf_counter()
+            step_time = now - self.previous_step_time
+            self.previous_step_time = now
 
             self.metrics["train/loss"].update(avg_loss)
             self.metrics["train/learning_rate"].update(lr)
@@ -159,9 +160,6 @@ class PerfLogger:
 
             if self._profiler is not None:
                 self._profiler.step(step)
-
-            if self.fp8_stats_enabled:
-                debug_api.step()
 
             if self.fp8_stats_enabled:
                 debug_api.step()
@@ -185,10 +183,8 @@ class PerfLogger:
 
             # Reset gradient accumulation tracking for next step
             self.num_tokens = 0
-            self.num_unpadded_tokens = torch.tensor(
-                0, dtype=torch.int64, device=torch.device(f"cuda:{self._dist_config.local_rank}")
-            )
-            self.running_loss = torch.tensor(0.0, device=torch.device(f"cuda:{self._dist_config.local_rank}"))
+            self.num_unpadded_tokens.zero_()
+            self.running_loss.zero_()
             self.grad_acc_step_count = 0
 
     def finish(self):
