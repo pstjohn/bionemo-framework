@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import socket
 import sys
 from pathlib import Path
 from unittest import mock
@@ -62,34 +61,15 @@ def pytest_collection_modifyitems(items):
     items[:] = stats_tests + other_tests
 
 
-@pytest.fixture(scope="session")
-def unused_tcp_port() -> int:
-    """Get an unused TCP port for distributed testing.
-
-    Returns:
-        An available TCP port number.
-    """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
-
-
 @pytest.fixture(scope="session", autouse=True)
-def device_mesh(unused_tcp_port):
+def device_mesh():
     """Create a re-usable torch process group for testing.
     This is a "auto-use", session-scope fixture so that a single torch process group is created and used in all tests.
     """
     # Initialize the distributed configuration, including creating the distributed process group.
     dist_config = DistributedConfig()
     device = torch.device(f"cuda:{dist_config.local_rank}")
-    torch.distributed.init_process_group(
-        backend="cpu:gloo,cuda:nccl",
-        device_id=device,
-        init_method=f"tcp://localhost:{unused_tcp_port}",
-        rank=dist_config.local_rank,
-        world_size=dist_config.world_size,
-    )
+    torch.distributed.init_process_group(backend="cpu:gloo,cuda:nccl", device_id=device)
     torch.cuda.set_device(dist_config.local_rank)
 
     # Mock these torch.distributed functions so that we re-use the same device mesh, and don't re-create or destroy the

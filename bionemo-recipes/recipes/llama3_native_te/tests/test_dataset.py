@@ -761,8 +761,7 @@ def test_cp_dataloader_multi_gpu(recipe_path, dataset_path, unused_tcp_port):
 
     cmd = [
         "torchrun",
-        "--rdzv-backend=c10d",
-        f"--rdzv-endpoint=localhost:{unused_tcp_port}",
+        "--standalone",
         "--nproc_per_node=2",
         "tests/test_dataset.py",
         "--dataset_path",
