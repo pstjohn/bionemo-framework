@@ -431,8 +431,8 @@ class ContextParallelDataLoaderWrapper:
         for the current CP rank.
 
         If tensor parallelism is also being used, the combined batch will look like:
-        combined_batch = [<cp_rank_0_shard>, <cp_rank_0_shard>, ..., <cp_rank_1_shard>, ...]
-        where each shard is replicated self.tp_world_size times.
+        combined_batch = [<cp0_shard>, <cp0_shard>, ..., <cp1_shard>, <cp1_shard>, ...]
+        where there are cp_world_size shards, and each shard is replicated tp_world_size times.
 
         Scalability:
             Rank 0's work grows linearly with CP size, but the other ranks do not need to store all the shards so they
@@ -825,7 +825,16 @@ class BatchType(TypedDict):
 def _scatter_batch_to_cp_ranks(
     all_batches: list[BatchType] | list[StopIteration], cp_group: torch.distributed.ProcessGroup | None = None
 ) -> BatchType | StopIteration:
-    """Scatter a batch to all the CP ranks."""
+    """Scatter a batch to all the CP ranks.
+
+    Args:
+        all_batches (list[BatchType] | list[StopIteration]): A list of already-sharded batches to scatter to the CP/TP
+            ranks.
+        cp_group (torch.distributed.ProcessGroup | None): The process group to scatter the batches to.
+
+    Returns:
+        BatchType | StopIteration: The batch on this rank.
+    """
     scatter_object_output_list = [None]
     # Note: This does not provide an async_op handle. Thus its blocking.
     torch.distributed.scatter_object_list(
