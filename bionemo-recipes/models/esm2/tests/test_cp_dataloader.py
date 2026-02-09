@@ -100,17 +100,18 @@ def get_tokenizer():
     return AutoTokenizer.from_pretrained("esm_fast_tokenizer")
 
 
-def create_cp_collator_thd(tokenizer, cp_world_size: int, tp_world_size: int | None = None):
+def create_cp_collator_thd(tokenizer, device_mesh):
     """Create a DataCollatorForContextParallel for THD format.
 
     Args:
         tokenizer: The tokenizer to use.
-        cp_world_size: The context parallelism world size.
-        tp_world_size: The tensor parallelism world size (optional).
+        device_mesh: The device mesh with named dimensions (must contain "cp").
 
     Returns:
         A DataCollatorForContextParallel configured for THD format.
     """
+    dim_names = device_mesh.mesh_dim_names
+    cp_world_size = device_mesh.size(dim_names.index("cp")) if "cp" in dim_names else 1
     divisibility_factor = 2 * cp_world_size
 
     # Create the base THD collator with per-sequence padding for CP
@@ -124,23 +125,23 @@ def create_cp_collator_thd(tokenizer, cp_world_size: int, tp_world_size: int | N
 
     return DataCollatorForContextParallel(
         collator=base_collator,
-        cp_world_size=cp_world_size,
-        tp_world_size=tp_world_size,
+        device_mesh=device_mesh,
         qkv_format="thd",
     )
 
 
-def create_cp_collator_bshd(tokenizer, cp_world_size: int, tp_world_size: int | None = None):
+def create_cp_collator_bshd(tokenizer, device_mesh):
     """Create a DataCollatorForContextParallel for BSHD format.
 
     Args:
         tokenizer: The tokenizer to use.
-        cp_world_size: The context parallelism world size.
-        tp_world_size: The tensor parallelism world size (optional).
+        device_mesh: The device mesh with named dimensions (must contain "cp").
 
     Returns:
         A DataCollatorForContextParallel configured for BSHD format.
     """
+    dim_names = device_mesh.mesh_dim_names
+    cp_world_size = device_mesh.size(dim_names.index("cp")) if "cp" in dim_names else 1
     divisibility_factor = 2 * cp_world_size
 
     # Create the base BSHD collator with padding
@@ -152,8 +153,7 @@ def create_cp_collator_bshd(tokenizer, cp_world_size: int, tp_world_size: int | 
 
     return DataCollatorForContextParallel(
         collator=base_collator,
-        cp_world_size=cp_world_size,
-        tp_world_size=tp_world_size,
+        device_mesh=device_mesh,
         qkv_format="bshd",
     )
 
@@ -432,6 +432,64 @@ def test_cp_dataloader_wrapper_cp_tp_bshd():
 
 
 # =============================================================================
+# TP + CP tests (4 processes, TP=2, CP=2, TP is the row dimension)
+# Data should be sharded across CP ranks and replicated within TP groups
+# =============================================================================
+
+
+def test_cp_dataloader_wrapper_tp_cp_thd():
+    """Test ContextParallelDataLoaderWrapper with TP=2, CP=2 using THD format.
+
+    TP is the row dimension (mesh_dim_names=("tp", "cp")).
+    Data should be sharded across CP ranks and replicated within TP groups.
+    """
+    cmd = [
+        "torchrun",
+        "--nproc_per_node=4",
+        os.path.relpath(__file__),
+        "test_tp_cp_thd",
+    ]
+    result = subprocess.run(
+        cmd,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        print(f"STDOUT:\n{result.stdout}")
+        print(f"STDERR:\n{result.stderr}")
+        pytest.fail(f"Command failed with exit code {result.returncode}")
+
+
+def test_cp_dataloader_wrapper_tp_cp_bshd():
+    """Test ContextParallelDataLoaderWrapper with TP=2, CP=2 using BSHD format.
+
+    TP is the row dimension (mesh_dim_names=("tp", "cp")).
+    Data should be sharded across CP ranks and replicated within TP groups.
+    """
+    cmd = [
+        "torchrun",
+        "--nproc_per_node=4",
+        os.path.relpath(__file__),
+        "test_tp_cp_bshd",
+    ]
+    result = subprocess.run(
+        cmd,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        print(f"STDOUT:\n{result.stdout}")
+        print(f"STDERR:\n{result.stderr}")
+        pytest.fail(f"Command failed with exit code {result.returncode}")
+
+
+# =============================================================================
 # Distributed test implementations (CP only)
 # =============================================================================
 
@@ -455,7 +513,7 @@ def _run_test_thd_scatter():
 
     # Create tokenizer and collator
     tokenizer = get_tokenizer()
-    cp_collator = create_cp_collator_thd(tokenizer, cp_world_size=cp_size)
+    cp_collator = create_cp_collator_thd(tokenizer, device_mesh=cp_mesh)
 
     # Tokenize the test proteins
     tokenized_proteins = [tokenizer(p, add_special_tokens=True) for p in TEST_PROTEINS[:2]]
@@ -522,7 +580,7 @@ def _run_test_bshd_scatter():
 
     # Create tokenizer and collator
     tokenizer = get_tokenizer()
-    cp_collator = create_cp_collator_bshd(tokenizer, cp_world_size=cp_size)
+    cp_collator = create_cp_collator_bshd(tokenizer, device_mesh=cp_mesh)
 
     # Tokenize the test proteins
     tokenized_proteins = [tokenizer(p, add_special_tokens=True) for p in TEST_PROTEINS[:2]]
@@ -594,9 +652,9 @@ def _run_test_stop_iteration(qkv_format: str):
     # Create tokenizer and collator
     tokenizer = get_tokenizer()
     if qkv_format == "thd":
-        cp_collator = create_cp_collator_thd(tokenizer, cp_world_size=cp_size)
+        cp_collator = create_cp_collator_thd(tokenizer, device_mesh=cp_mesh)
     else:
-        cp_collator = create_cp_collator_bshd(tokenizer, cp_world_size=cp_size)
+        cp_collator = create_cp_collator_bshd(tokenizer, device_mesh=cp_mesh)
 
     # Tokenize the test proteins - use only 2 for a single batch
     tokenized_proteins = [tokenizer(p, add_special_tokens=True) for p in TEST_PROTEINS[:2]]
@@ -655,9 +713,9 @@ def _run_test_multiple_batches(qkv_format: str):
     # Create tokenizer and collator
     tokenizer = get_tokenizer()
     if qkv_format == "thd":
-        cp_collator = create_cp_collator_thd(tokenizer, cp_world_size=cp_size)
+        cp_collator = create_cp_collator_thd(tokenizer, device_mesh=cp_mesh)
     else:
-        cp_collator = create_cp_collator_bshd(tokenizer, cp_world_size=cp_size)
+        cp_collator = create_cp_collator_bshd(tokenizer, device_mesh=cp_mesh)
 
     # Tokenize all proteins - with batch_size=2, we'll get 2 batches
     tokenized_proteins = [tokenizer(p, add_special_tokens=True) for p in TEST_PROTEINS]
@@ -744,9 +802,9 @@ def _run_test_tp_only(qkv_format: str):
     # Create tokenizer and collator with TP replication
     tokenizer = get_tokenizer()
     if qkv_format == "thd":
-        cp_collator = create_cp_collator_thd(tokenizer, cp_world_size=cp_size, tp_world_size=tp_size)
+        cp_collator = create_cp_collator_thd(tokenizer, device_mesh=device_mesh)
     else:
-        cp_collator = create_cp_collator_bshd(tokenizer, cp_world_size=cp_size, tp_world_size=tp_size)
+        cp_collator = create_cp_collator_bshd(tokenizer, device_mesh=device_mesh)
 
     # Tokenize the test proteins
     tokenized_proteins = [tokenizer(p, add_special_tokens=True) for p in TEST_PROTEINS[:2]]
@@ -849,9 +907,9 @@ def _run_test_cp_tp(qkv_format: str):
     # Create tokenizer and collator with TP replication
     tokenizer = get_tokenizer()
     if qkv_format == "thd":
-        cp_collator = create_cp_collator_thd(tokenizer, cp_world_size=cp_size, tp_world_size=tp_size)
+        cp_collator = create_cp_collator_thd(tokenizer, device_mesh=device_mesh)
     else:
-        cp_collator = create_cp_collator_bshd(tokenizer, cp_world_size=cp_size, tp_world_size=tp_size)
+        cp_collator = create_cp_collator_bshd(tokenizer, device_mesh=device_mesh)
 
     # Tokenize the test proteins
     tokenized_proteins = [tokenizer(p, add_special_tokens=True) for p in TEST_PROTEINS[:2]]
@@ -880,7 +938,7 @@ def _run_test_cp_tp(qkv_format: str):
     # Verify that this rank received the correct shard
     # With CP=2 and TP=2, shards are: [cp0_tp0, cp0_tp1, cp1_tp0, cp1_tp1]
     # = [cp0_shard, cp0_shard, cp1_shard, cp1_shard]
-    expected_batch = expected_sharded_batches[2 * cp_rank]  # 0 or 2 for cp0 or cp1
+    expected_batch = expected_sharded_batches[flat_rank]
 
     torch.testing.assert_close(
         batch_on_rank["input_ids"],
@@ -921,6 +979,123 @@ def _run_test_cp_tp(qkv_format: str):
     torch.distributed.destroy_process_group()
 
 
+# =============================================================================
+# Distributed test implementations (TP + CP combined, TP row-major)
+# =============================================================================
+
+
+def _run_test_tp_cp(qkv_format: str):
+    """Test that data is sharded across CP ranks and replicated across TP ranks with TP as the row dimension.
+
+    With TP=2, CP=2 and mesh_dim_names=("tp", "cp"):
+    - 4 total ranks
+    - Mesh shape: (tp=2, cp=2) — TP is the row dimension
+    - Flattened order: [tp0_cp0, tp0_cp1, tp1_cp0, tp1_cp1]
+    - Expected batches from collator: [cp0_shard, cp1_shard, cp0_shard, cp1_shard]
+
+    Args:
+        qkv_format: Either "thd" or "bshd".
+    """
+    dist_config = DistributedConfig()
+
+    # Initialize distributed with gloo backend (CPU-only)
+    torch.distributed.init_process_group(backend="gloo")
+
+    # TP=2, CP=2 configuration with TP as the row dimension
+    tp_size = 2
+    cp_size = 2
+
+    # Create a 2D mesh with TP as the first (row) dimension
+    device_mesh = init_device_mesh(
+        "cpu",
+        mesh_shape=(tp_size, cp_size),
+        mesh_dim_names=("tp", "cp"),
+    )
+
+    # Flatten the TP+CP mesh for the dataloader wrapper (TP first)
+    cp_tp_mesh = device_mesh[("tp", "cp")]._flatten("tp_cp")
+    flat_rank = cp_tp_mesh.get_local_rank()
+
+    # Get individual CP and TP ranks
+    cp_rank = device_mesh.get_local_rank("cp")
+    tp_rank = device_mesh.get_local_rank("tp")
+
+    # Create tokenizer and collator — pass the 2D mesh so collator reads dimension order
+    tokenizer = get_tokenizer()
+    if qkv_format == "thd":
+        cp_collator = create_cp_collator_thd(tokenizer, device_mesh=device_mesh)
+    else:
+        cp_collator = create_cp_collator_bshd(tokenizer, device_mesh=device_mesh)
+
+    # Tokenize the test proteins
+    tokenized_proteins = [tokenizer(p, add_special_tokens=True) for p in TEST_PROTEINS[:2]]
+
+    # Create a real DataLoader (only on flat rank 0)
+    if flat_rank == 0:
+        dataloader = create_dataloader(tokenized_proteins, collate_fn=cp_collator, batch_size=2)
+        # Get expected batch for verification
+        expected_sharded_batches = cp_collator(tokenized_proteins)
+    else:
+        dataloader = None
+        expected_sharded_batches = None
+
+    # Broadcast expected batch to all ranks for verification
+    expected_list = [expected_sharded_batches]
+    torch.distributed.broadcast_object_list(expected_list, src=0)
+    expected_sharded_batches = expected_list[0]
+
+    # Create the wrapper
+    wrapper = ContextParallelDataLoaderWrapper(dataloader=dataloader, cp_tp_mesh=cp_tp_mesh)
+
+    # Iterate and verify
+    iter(wrapper)
+    batch_on_rank = next(wrapper)
+
+    # Verify that this rank received the correct shard
+    # With TP row-major, flattened order: [tp0_cp0, tp0_cp1, tp1_cp0, tp1_cp1]
+    # Collator output: [cp0_shard, cp1_shard, cp0_shard, cp1_shard]
+    expected_batch = expected_sharded_batches[flat_rank]
+
+    torch.testing.assert_close(
+        batch_on_rank["input_ids"],
+        expected_batch["input_ids"],
+        msg=f"Flat rank {flat_rank} (tp={tp_rank}, cp={cp_rank}): input_ids mismatch",
+    )
+    torch.testing.assert_close(
+        batch_on_rank["labels"],
+        expected_batch["labels"],
+        msg=f"Flat rank {flat_rank} (tp={tp_rank}, cp={cp_rank}): labels mismatch",
+    )
+
+    # Gather all batches to verify sharding and replication patterns
+    all_input_ids = [None] * dist_config.world_size
+    torch.distributed.all_gather_object(all_input_ids, batch_on_rank["input_ids"])
+
+    if flat_rank == 0:
+        # Verify TP replication: ranks with same CP rank but different TP rank should have identical data
+        # With TP row-major flattened: [tp0_cp0(0), tp0_cp1(1), tp1_cp0(2), tp1_cp1(3)]
+        # Rank 0 (tp=0, cp=0) should match Rank 2 (tp=1, cp=0)
+        torch.testing.assert_close(
+            all_input_ids[0],
+            all_input_ids[2],
+            msg="TP replication failed: cp=0 ranks (flat 0 and 2) have different data",
+        )
+        # Rank 1 (tp=0, cp=1) should match Rank 3 (tp=1, cp=1)
+        torch.testing.assert_close(
+            all_input_ids[1],
+            all_input_ids[3],
+            msg="TP replication failed: cp=1 ranks (flat 1 and 3) have different data",
+        )
+
+        # Verify CP sharding: ranks with different CP ranks should have different data
+        # Rank 0 (cp=0) should differ from Rank 1 (cp=1)
+        assert not torch.equal(all_input_ids[0], all_input_ids[1]), (
+            "CP sharding failed: different CP ranks have the same data"
+        )
+
+    torch.distributed.destroy_process_group()
+
+
 if __name__ == "__main__":
     import sys
 
@@ -948,11 +1123,16 @@ if __name__ == "__main__":
         _run_test_tp_only(qkv_format="thd")
     elif test_name == "test_tp_only_bshd":
         _run_test_tp_only(qkv_format="bshd")
-    # CP + TP tests
+    # CP + TP tests (CP row-major)
     elif test_name == "test_cp_tp_thd":
         _run_test_cp_tp(qkv_format="thd")
     elif test_name == "test_cp_tp_bshd":
         _run_test_cp_tp(qkv_format="bshd")
+    # TP + CP tests (TP row-major)
+    elif test_name == "test_tp_cp_thd":
+        _run_test_tp_cp(qkv_format="thd")
+    elif test_name == "test_tp_cp_bshd":
+        _run_test_tp_cp(qkv_format="bshd")
     else:
         print(f"Unknown test: {test_name}")
         sys.exit(1)

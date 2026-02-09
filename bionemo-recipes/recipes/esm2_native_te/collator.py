@@ -19,7 +19,7 @@ This should eventually get moved to a separate package, or possibly upstreamed i
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 import datasets
@@ -293,15 +293,18 @@ class DataCollatorForContextParallel:
 
     Note:
         When used with the ContextParallelDataLoaderWrapper and both context parallelism and tensor parallelism are
-        used, we assume that the cp_tp mesh is provided as a flattened mesh, with context parallelism as the first (row)
-        dimension, and tensor parallelism as the second (column) dimension. The flattened mesh will therefore look like:
-        [(cp_rank_0, tp_rank_0), (cp_rank_0, tp_rank_1), ..., (cp_rank_1, tp_rank_0), (cp_rank_1, tp_rank_1), ...] and
-        this collator prepares a flattened, CP-aware and TP-replicated batch accordingly.
+        used, the collator inspects the ordering of the mesh dimensions to determine the layout of the flattened batch.
+
+        If "cp" comes before "tp" in the mesh dimension names (CP row-major), the flattened batch will be:
+        [(cp0, tp0), (cp0, tp1), ..., (cp1, tp0), (cp1, tp1), ...]
+
+        If "tp" comes before "cp" (TP row-major), the flattened batch will be:
+        [(tp0, cp0), (tp0, cp1), ..., (tp1, cp0), (tp1, cp1), ...]
 
     Args:
         collator: The collator to use for the batch.
-        cp_world_size: The number of context parallelism ranks.
-        tp_world_size: The number of tensor parallelism ranks.
+        device_mesh: The device mesh with named dimensions. Must contain a "cp" dimension.
+            May optionally contain a "tp" dimension for tensor parallelism.
         qkv_format: The format of the query-key-value (QKV) tensor.
         is_causal_lm: Whether the collator is for a causal language model. If True, the labels will be shifted before
             being split into CP shards, and will be returned in the `shift_labels` field.
@@ -309,10 +312,31 @@ class DataCollatorForContextParallel:
     """
 
     collator: DataCollator
-    cp_world_size: int
-    tp_world_size: int | None = None
+    device_mesh: torch.distributed.device_mesh.DeviceMesh
     qkv_format: str = "thd"
     is_causal_lm: bool = False
+
+    # Derived fields, initialized in __post_init__.
+    cp_world_size: int = field(init=False)
+    tp_world_size: int | None = field(init=False)
+    _is_cp_row_major: bool = field(init=False)
+
+    def __post_init__(self):
+        """Initialize the cp_world_size, tp_world_size, and _is_cp_row_major fields based on the device mesh."""
+        dim_names = self.device_mesh.mesh_dim_names
+        if dim_names is None:
+            raise ValueError("device_mesh must have mesh_dim_names")
+
+        self.cp_world_size = self.device_mesh.size(dim_names.index("cp")) if "cp" in dim_names else 1
+        self.tp_world_size = self.device_mesh.size(dim_names.index("tp")) if "tp" in dim_names else None
+
+        # Determine whether CP is the row (outer) dimension of the 2D mesh.
+        # When flattened, the row-major dimension's index changes slowest.
+        # If "cp" comes before "tp" in mesh_dim_names, CP is the row dimension.
+        if "cp" in dim_names and "tp" in dim_names:
+            self._is_cp_row_major = dim_names.index("cp") < dim_names.index("tp")
+        else:
+            self._is_cp_row_major = True
 
     def __call__(self, features) -> list[dict[str, Any]]:
         """Process batches of data and create shards for each context parallelism rank.
@@ -361,9 +385,18 @@ class DataCollatorForContextParallel:
             combined_batch.append(batch_shard)
 
         if self.tp_world_size is not None:
-            # If we're using tensor parallelism, we need to replicate the batch for each TP rank. We do this by just
-            # repeating the batch in a single flattened output list.
-            combined_batch = [batch for batch in combined_batch for _ in range(self.tp_world_size)]
+            # Replicate each CP shard for TP ranks. The ordering depends on which dimension forms the rows in the
+            # flattened mesh.
+            if self._is_cp_row_major:
+                # Flattened mesh: [(cp0,tp0), (cp0,tp1), (cp1,tp0), (cp1,tp1)]
+                # Output: [cp0, cp0, cp1, cp1]
+                combined_batch = [batch for batch in combined_batch for _ in range(self.tp_world_size)]
+            else:
+                # Flattened mesh: [(tp0,cp0), (tp0,cp1), (tp1,cp0), (tp1,cp1)]
+                # Output: [cp0, cp1, cp0, cp1]
+                combined_batch = [
+                    combined_batch[cp_rank] for _ in range(self.tp_world_size) for cp_rank in range(self.cp_world_size)
+                ]
 
         return combined_batch
 
@@ -387,9 +420,9 @@ class ContextParallelDataLoaderWrapper:
 
         Args:
             dataloader: The dataloader to use.
-            cp_tp_mesh: The context parallel mesh, or combined context parallel and tensor parallel mesh. This should be
-                a flattened mesh, with context parallelism as the first (row) dimension, and tensor parallelism as the
-                second (column) dimension. See the `DataCollatorForContextParallel` class for more details.
+            cp_tp_mesh: The context parallel mesh, or a flattened, combined context parallel and tensor parallel mesh.
+                If a flattened mesh is provided, the cp / tp dimensions should be in the order they appeared in the
+                mesh_dim_names as passed to DataCollatorForContextParallel.
         """
         if cp_tp_mesh.get_local_rank() == 0:
             assert dataloader is not None, "dataloader must be provided on rank 0"
@@ -432,7 +465,8 @@ class ContextParallelDataLoaderWrapper:
 
         If tensor parallelism is also being used, the combined batch will look like:
         combined_batch = [<cp0_shard>, <cp0_shard>, ..., <cp1_shard>, <cp1_shard>, ...]
-        where there are cp_world_size shards, and each shard is replicated tp_world_size times.
+        where there are cp_world_size shards, and each shard is replicated tp_world_size times. The ordering of the
+        shards depends on which dimension forms the rows in the flattened mesh.
 
         Scalability:
             Rank 0's work grows linearly with CP size, but the other ranks do not need to store all the shards so they
