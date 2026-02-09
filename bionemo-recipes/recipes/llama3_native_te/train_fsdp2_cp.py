@@ -123,7 +123,7 @@ def main(args: DictConfig) -> float | None:
 
         train_dataloader.collate_fn = DataCollatorForContextParallel(
             collator=train_dataloader.collate_fn,
-            cp_world_size=device_mesh["cp"].size(),
+            device_mesh=device_mesh,
             qkv_format=args.config_kwargs.attn_input_format,
             is_causal_lm=True,
         )
