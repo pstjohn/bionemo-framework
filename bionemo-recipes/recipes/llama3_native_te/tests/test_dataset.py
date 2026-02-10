@@ -750,7 +750,7 @@ def test_cp_dataloader(tokenizer_path):
 
 @requires_multi_gpu
 @pytest.mark.parametrize("dataset_path", ["dlcm_sanity_dataset.parquet", "test_genomic_sequences.parquet"])
-def test_cp_dataloader_multi_gpu(recipe_path, dataset_path, unused_tcp_port):
+def test_cp_dataloader_multi_gpu(recipe_path, dataset_path):
     """Tests that the CP dataloader works correctly with multiple GPUs.
 
     The `test_genomic_sequences.parquet` dataset is too small to even fill a single batch with the default context
