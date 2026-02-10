@@ -236,6 +236,33 @@ class TokenPackingDataset(torch.utils.data.IterableDataset):
     """Whether to drop the last batch if it's less than max_length."""
     split_samples: bool = False
     """Whether to split samples to ensure batches have exactly max_tokens_per_batch tokens."""
+    pad_sequences_to_be_divisible_by: int | None = None
+    """If set, account for per-sequence padding when accumulating batches.
+
+    Each sequence's contribution to the batch length is rounded up to the nearest multiple of this value,
+    matching the padding behavior of DataCollatorWithFlattening with the same parameter. When used with
+    split_samples=True, the split point is chosen so that the first part (after padding) exactly fills
+    the remaining batch capacity.
+    """
+
+    def __post_init__(self):
+        """Validate padding configuration."""
+        if (
+            self.pad_sequences_to_be_divisible_by is not None
+            and self.max_tokens_per_batch % self.pad_sequences_to_be_divisible_by != 0
+        ):
+            logger.warning(
+                "max_tokens_per_batch (%d) is not divisible by pad_sequences_to_be_divisible_by (%d). "
+                "Batches may not fill to exactly max_tokens_per_batch when split_samples=True.",
+                self.max_tokens_per_batch,
+                self.pad_sequences_to_be_divisible_by,
+            )
+
+    def _padded_len(self, length: int) -> int:
+        """Return the padded length of a sequence, rounding up to the nearest multiple of pad_sequences_to_be_divisible_by."""
+        if self.pad_sequences_to_be_divisible_by is None:
+            return length
+        return -(-length // self.pad_sequences_to_be_divisible_by) * self.pad_sequences_to_be_divisible_by
 
     def __iter__(self):
         """Yield batches of samples, each with a variable number of tokens up to the maximum length.
@@ -243,13 +270,16 @@ class TokenPackingDataset(torch.utils.data.IterableDataset):
         When split_samples=True, ensures each batch has exactly max_tokens_per_batch by splitting
         the final sample if needed. The remaining tokens from the split sample start the next batch.
 
+        When pad_sequences_to_be_divisible_by is set, each sequence's padded length is used when
+        accumulating batch sizes, so the total padded length of the batch matches max_tokens_per_batch.
+
         Returns:
             A generator of batches of samples, each with a variable number of tokens up to the maximum length.
         """
         samples = []
         current_length = 0
         for sample in iter(self.dataset):
-            current_length += len(sample["input_ids"])
+            current_length += self._padded_len(len(sample["input_ids"]))
             if current_length == self.max_tokens_per_batch:
                 yield [*samples, sample]
                 samples = []
@@ -263,15 +293,15 @@ class TokenPackingDataset(torch.utils.data.IterableDataset):
                     samples = [sample]
 
                 else:
-                    # Calculate how many tokens are already in the batch
-                    tokens_in_batch = current_length - len(sample["input_ids"])
+                    # Calculate how many padded tokens are already in the batch
+                    tokens_in_batch = current_length - self._padded_len(len(sample["input_ids"]))
                     # Calculate how many tokens we can fit from this sample
                     tokens_available = self.max_tokens_per_batch - tokens_in_batch
                     first_part, remaining_part = _split_sample_by_num_tokens(sample, tokens_available)
                     yield [*samples, first_part]
                     samples = [remaining_part]
 
-                current_length = len(samples[0]["input_ids"])
+                current_length = self._padded_len(len(samples[0]["input_ids"]))
             else:
                 samples.append(sample)
 
