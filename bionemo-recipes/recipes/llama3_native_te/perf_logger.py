@@ -126,6 +126,7 @@ class PerfLogger:
         step: int,
         grad_norm: torch.Tensor | DTensor,
         lr: float,
+        extra_metrics: dict[str, float] | None = None,
     ):
         """Log a step to the logger and wandb.
 
@@ -133,6 +134,7 @@ class PerfLogger:
             step: The step number.
             grad_norm: The gradient norm of the step.
             lr: The learning rate of the step.
+            extra_metrics: Optional dictionary of additional metrics to log to wandb.
         """
         if self._dist_config.local_rank == 0:
             logger.debug("log_step %s", step)
@@ -179,6 +181,9 @@ class PerfLogger:
                 metrics = self.metrics.compute()
                 self.metrics.reset()
                 metrics["train/global_step"] = torch.tensor(step, dtype=torch.int64)
+
+                if extra_metrics:
+                    metrics.update(extra_metrics)
 
                 if self._dist_config.is_main_process():
                     wandb.log(metrics, step=step)

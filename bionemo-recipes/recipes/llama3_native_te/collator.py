@@ -20,6 +20,7 @@ This should eventually get moved to a separate package, or possibly upstreamed i
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
@@ -257,6 +258,7 @@ class TokenPackingDataset(torch.utils.data.IterableDataset):
                 self.max_tokens_per_batch,
                 self.pad_sequences_to_be_divisible_by,
             )
+        self.perf_metrics: dict[str, float] = {"batch_creation": 0.0}
 
     def _padded_len(self, length: int) -> int:
         """Return the padded length of a sequence, rounding up to the nearest multiple of pad_sequences_to_be_divisible_by."""
@@ -278,14 +280,18 @@ class TokenPackingDataset(torch.utils.data.IterableDataset):
         """
         samples = []
         current_length = 0
+        batch_start = time.perf_counter()
         for sample in iter(self.dataset):
             current_length += self._padded_len(len(sample["input_ids"]))
             if current_length == self.max_tokens_per_batch:
+                self.perf_metrics["batch_creation"] += time.perf_counter() - batch_start
                 yield [*samples, sample]
                 samples = []
                 current_length = 0
+                batch_start = time.perf_counter()
 
             elif current_length > self.max_tokens_per_batch:
+                self.perf_metrics["batch_creation"] += time.perf_counter() - batch_start
                 if not self.split_samples:
                     # If we are not splitting samples, we can just yield the current batch (before this sample) and
                     # start a new one.
@@ -302,10 +308,12 @@ class TokenPackingDataset(torch.utils.data.IterableDataset):
                     samples = [remaining_part]
 
                 current_length = self._padded_len(len(samples[0]["input_ids"]))
+                batch_start = time.perf_counter()
             else:
                 samples.append(sample)
 
         if not self.drop_last and samples:
+            self.perf_metrics["batch_creation"] += time.perf_counter() - batch_start
             yield samples
 
     def set_epoch(self, epoch: int):
@@ -467,6 +475,13 @@ class ContextParallelDataLoaderWrapper:
         self._prefetch_thread: threading.Thread | None = None
         self._prefetch_result: Any = None
         self._cuda_device: int | None = None
+        self._prefetch_time_dataloader: float = 0.0
+        self._prefetch_time_scatter: float = 0.0
+        self.perf_metrics: dict[str, float] | None = (
+            {"next_total": 0.0, "next_dataloader": 0.0, "next_scatter": 0.0, "num_batches": 0}
+            if self.cp_tp_rank == 0
+            else None
+        )
 
         logger.debug(
             "Created ContextParallelDataLoaderWrapper on global rank %s, cp rank %s",
@@ -488,12 +503,18 @@ class ContextParallelDataLoaderWrapper:
     @nvtx.annotate("ContextParallelDataLoaderWrapper __next__", color="blue")
     def __next__(self):
         """Get the batch from the dataloader for the current CP rank."""
+        t_start = time.perf_counter()
         self._prefetch_thread.join()
         result = self._prefetch_result
         if isinstance(result, StopIteration):
             self._prefetch_thread = None
             raise result
         self._kick_prefetch()
+        if self.perf_metrics is not None:
+            self.perf_metrics["next_total"] += time.perf_counter() - t_start
+            self.perf_metrics["next_dataloader"] += self._prefetch_time_dataloader
+            self.perf_metrics["next_scatter"] += self._prefetch_time_scatter
+            self.perf_metrics["num_batches"] += 1
         return result
 
     def _kick_prefetch(self):
@@ -546,13 +567,18 @@ class ContextParallelDataLoaderWrapper:
         """
         try:
             with nvtx.annotate("ContextParallelDataLoaderWrapper next batch", color="green"):
+                t0 = time.perf_counter()
                 combined_batch = next(self._iterator) if self.cp_tp_rank == 0 else None
+                self._prefetch_time_dataloader = time.perf_counter() - t0
         except StopIteration as ex:
             # If we encounter a StopIteration in the dataloader, we want to raise this error on all the CP ranks, so
             # that the dataloader can be restarted.
+            self._prefetch_time_dataloader = 0.0
             combined_batch = [ex] * self.num_cp_tp_ranks
 
+        t0 = time.perf_counter()
         batch_on_this_rank = _scatter_batch_to_cp_tp_ranks(combined_batch, self.cp_tp_group)
+        self._prefetch_time_scatter = time.perf_counter() - t0
 
         if isinstance(batch_on_this_rank, StopIteration):
             raise batch_on_this_rank

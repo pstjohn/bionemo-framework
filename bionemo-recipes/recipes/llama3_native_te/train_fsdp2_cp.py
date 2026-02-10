@@ -197,10 +197,32 @@ def main(args: DictConfig) -> float | None:
                 scheduler.step()
                 optimizer.zero_grad()
 
+                # Collect dataloader performance metrics on logging steps
+                dataloader_metrics = None
+                if step % perf_logger.logging_frequency == 0 and step > 0:
+                    dataloader_metrics = {}
+                    if train_dataloader.perf_metrics is not None:
+                        pm = train_dataloader.perf_metrics
+                        n = pm["num_batches"] or 1
+                        dataloader_metrics["dataloader/avg_next_time"] = pm["next_total"] / n
+                        dataloader_metrics["dataloader/avg_fetch_time"] = pm["next_dataloader"] / n
+                        dataloader_metrics["dataloader/avg_scatter_time"] = pm["next_scatter"] / n
+                        for k in pm:
+                            pm[k] = 0.0 if isinstance(pm[k], float) else 0
+                    if hasattr(train_dataloader, "dataloader"):
+                        ds = getattr(train_dataloader.dataloader, "dataset", None)
+                        if ds is not None and hasattr(ds, "perf_metrics"):
+                            tp = ds.perf_metrics
+                            if tp["batch_creation"] > 0:
+                                dataloader_metrics["dataloader/batch_creation_time"] = tp["batch_creation"]
+                            for k in tp:
+                                tp[k] = 0.0
+
                 perf_logger.log_step(
                     step=step,
                     grad_norm=total_norm,
                     lr=optimizer.param_groups[0]["lr"],
+                    extra_metrics=dataloader_metrics,
                 )
 
                 if ckpt_path and should_save_checkpoint(step, args.checkpoint.save_every_n_steps):
