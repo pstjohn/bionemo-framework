@@ -158,10 +158,12 @@ class PerfLogger:
                 debug_api.step()
 
             if step % self.logging_frequency == 0 and step > 0:
-                # Calculate average loss for the window of logging_frequency steps
-                avg_loss = self.running_loss / (self.grad_acc_step_count * self.logging_frequency)
+                # Calculate average loss over all micro steps in the logging window
+                avg_loss = self.running_loss / self.grad_acc_step_count
                 self.min_loss = torch.minimum(self.min_loss, avg_loss)
 
+                # For some reason, these trigger a CudaStreamSynchronize call, which blocks the dataloader in the next
+                # step. We therefore only update these once every logging_frequency steps.
                 self.metrics["train/loss"].update(avg_loss)
                 self.metrics["train/learning_rate"].update(lr)
                 self.metrics["train/grad_norm"].update(grad_norm)
