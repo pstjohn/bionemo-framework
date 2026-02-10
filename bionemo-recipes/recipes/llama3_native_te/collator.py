@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 import datasets
+import nvtx
 import torch
 from transformer_engine.pytorch.attention.dot_product_attention.context_parallel import pad_thd_sequences_for_cp
 from transformers import DataCollator, DataCollatorForLanguageModeling
@@ -456,13 +457,14 @@ class ContextParallelDataLoaderWrapper:
 
     def __next__(self):
         """Get the batch from the dataloader for the current CP rank."""
-        self._prefetch_thread.join()
-        result = self._prefetch_result
-        if isinstance(result, StopIteration):
-            self._prefetch_thread = None
-            raise result
-        self._kick_prefetch()
-        return result
+        with nvtx.annotate("ContextParallelDataLoaderWrapper __next__", color="blue"):
+            self._prefetch_thread.join()
+            result = self._prefetch_result
+            if isinstance(result, StopIteration):
+                self._prefetch_thread = None
+                raise result
+            self._kick_prefetch()
+            return result
 
     def _kick_prefetch(self):
         """Start a background thread to prefetch exactly one batch via scatter."""
@@ -485,6 +487,7 @@ class ContextParallelDataLoaderWrapper:
             self._prefetch_thread.join(timeout=10)
             self._prefetch_thread = None
 
+    @nvtx.annotate("ContextParallelDataLoaderWrapper _send_data_to_cp_tp_ranks", color="green")
     def _send_data_to_cp_tp_ranks(self):
         """Send data to all the CP/TP ranks.
 

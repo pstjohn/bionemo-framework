@@ -16,6 +16,7 @@
 from collections import OrderedDict
 from typing import ClassVar, Unpack
 
+import nvtx
 import torch
 import torch.nn as nn
 import transformer_engine.pytorch
@@ -189,7 +190,8 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
-            inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
+            with nvtx.annotate("NVLlamaModel.forward embed_tokens", color="yellow"):
+                inputs_embeds: torch.Tensor = self.embed_tokens(input_ids)
 
         hidden_states = inputs_embeds
 
@@ -237,19 +239,20 @@ class NVLlamaModel(NVLlamaPreTrainedModel):
             if output_hidden_states:
                 all_hidden_states = (*all_hidden_states, hidden_states)
 
-            hidden_states = decoder_layer(
-                hidden_states,
-                attention_mask=None if self.config.attn_input_format == "thd" else attention_mask,
-                rotary_pos_emb=te_rope_emb,
-                inference_params=past_key_values,
-                cu_seqlens_q=kwargs.get("cu_seq_lens_q", None),
-                cu_seqlens_kv=kwargs.get("cu_seq_lens_k", None),
-                cu_seqlens_q_padded=kwargs.get("cu_seq_lens_q_padded", None),
-                cu_seqlens_kv_padded=kwargs.get("cu_seq_lens_k_padded", None),
-                max_seqlen_q=kwargs.get("max_length_q", None),
-                max_seqlen_kv=kwargs.get("max_length_k", None),
-                pad_between_seqs=kwargs.get("pad_between_seqs", None),
-            )
+            with nvtx.annotate("NVLlamaModel.forward decoder_layer", color="blue"):
+                hidden_states = decoder_layer(
+                    hidden_states,
+                    attention_mask=None if self.config.attn_input_format == "thd" else attention_mask,
+                    rotary_pos_emb=te_rope_emb,
+                    inference_params=past_key_values,
+                    cu_seqlens_q=kwargs.get("cu_seq_lens_q", None),
+                    cu_seqlens_kv=kwargs.get("cu_seq_lens_k", None),
+                    cu_seqlens_q_padded=kwargs.get("cu_seq_lens_q_padded", None),
+                    cu_seqlens_kv_padded=kwargs.get("cu_seq_lens_k_padded", None),
+                    max_seqlen_q=kwargs.get("max_length_q", None),
+                    max_seqlen_kv=kwargs.get("max_length_k", None),
+                    pad_between_seqs=kwargs.get("pad_between_seqs", None),
+                )
 
         hidden_states = self.norm(hidden_states)
 
@@ -279,7 +282,10 @@ class NVLlamaForCausalLM(NVLlamaPreTrainedModel, transformers.GenerationMixin):
         super().__init__(config)
         self.model = NVLlamaModel(config)
         self.vocab_size = config.vocab_size
-        with transformer_engine.pytorch.quantized_model_init(enabled=False):
+        with (
+            transformer_engine.pytorch.quantized_model_init(enabled=False),
+            nvtx.annotate("NVLlamaForCausalLM.forward lm_head", color="red"),
+        ):
             self.lm_head = transformer_engine.pytorch.Linear(
                 config.hidden_size,
                 config.vocab_size,

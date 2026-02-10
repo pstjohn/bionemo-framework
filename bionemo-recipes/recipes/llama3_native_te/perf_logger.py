@@ -139,24 +139,28 @@ class PerfLogger:
                 f"and can be incremented by log_micro_step()."
             )
 
-            if isinstance(grad_norm, DTensor):
-                grad_norm = grad_norm.to_local()
+            with nvtx.annotate("PerfLogger.log_step grad_norm to_local", color="purple"):
+                if isinstance(grad_norm, DTensor):
+                    grad_norm = grad_norm.to_local()
 
-            avg_loss = self.running_loss / self.grad_acc_step_count
-            self.min_loss = torch.minimum(self.min_loss, avg_loss)
+            with nvtx.annotate("PerfLogger.log_step avg_loss", color="purple"):
+                avg_loss = self.running_loss / self.grad_acc_step_count
+                self.min_loss = torch.minimum(self.min_loss, avg_loss)
+
             now = time.perf_counter()
             step_time = now - self.previous_step_time
             self.previous_step_time = now
 
-            self.metrics["train/loss"].update(avg_loss)
-            self.metrics["train/learning_rate"].update(lr)
-            self.metrics["train/grad_norm"].update(grad_norm)
-            self.metrics["train/step_time"].update(step_time)
-            self.metrics["train/tokens_per_second_per_gpu"].update(self.num_tokens / step_time)
-            self.metrics["train/unpadded_tokens_per_second_per_gpu"].update(self.num_unpadded_tokens / step_time)
-            self.metrics["train/total_unpadded_tokens_per_batch"].update(
-                self.num_unpadded_tokens / self.logging_frequency
-            )
+            with nvtx.annotate("PerfLogger.log_step metrics update", color="purple"):
+                self.metrics["train/loss"].update(avg_loss)
+                self.metrics["train/learning_rate"].update(lr)
+                self.metrics["train/grad_norm"].update(grad_norm)
+                self.metrics["train/step_time"].update(step_time)
+                self.metrics["train/tokens_per_second_per_gpu"].update(self.num_tokens / step_time)
+                self.metrics["train/unpadded_tokens_per_second_per_gpu"].update(self.num_unpadded_tokens / step_time)
+                self.metrics["train/total_unpadded_tokens_per_batch"].update(
+                    self.num_unpadded_tokens / self.logging_frequency
+                )
 
             if self._profiler is not None:
                 self._profiler.step(step)
