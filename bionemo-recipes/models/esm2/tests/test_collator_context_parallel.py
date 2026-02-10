@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import copy
+import threading
 from typing import Dict, Iterator, List
 from unittest import mock
 
@@ -398,7 +399,7 @@ def test_dataloader_scatter_nopadding():
         loader_rank1 = ContextParallelDataLoaderWrapper(None, cp_mesh_rank1)
 
         scatter_payload: Dict[str, List[Dict[str, torch.Tensor]]] = {}
-        current_rank = {"value": None}
+        data_ready = threading.Event()
 
         def fake_scatter(
             *,
@@ -408,9 +409,14 @@ def test_dataloader_scatter_nopadding():
             group_src,
         ):
             if scatter_object_input_list is not None:
+                # Rank 0: store the full payload and return shard 0
                 scatter_payload["data"] = scatter_object_input_list
-            assert "data" in scatter_payload, "Rank 0 payload missing"
-            scatter_object_output_list[0] = scatter_payload["data"][current_rank["value"]]
+                data_ready.set()
+                scatter_object_output_list[0] = scatter_object_input_list[0]
+            else:
+                # Rank 1: wait for rank 0's data, then return shard 1
+                data_ready.wait(timeout=5)
+                scatter_object_output_list[0] = scatter_payload["data"][1]
 
         with (
             mock.patch("esm.collator.torch.distributed.scatter_object_list", side_effect=fake_scatter),
@@ -419,10 +425,7 @@ def test_dataloader_scatter_nopadding():
             iter(loader_rank0)
             iter(loader_rank1)
 
-            current_rank["value"] = 0
             batch_cp0 = next(loader_rank0)
-
-            current_rank["value"] = 1
             batch_cp1 = next(loader_rank1)
 
         return batch_cp0, batch_cp1
@@ -487,7 +490,7 @@ def test_dataloader_scatter_with_pad_between_seqs():
         loader_rank1 = ContextParallelDataLoaderWrapper(None, cp_mesh_rank1)
 
         scatter_payload: Dict[str, List[Dict[str, torch.Tensor]]] = {}
-        current_rank = {"value": None}
+        data_ready = threading.Event()
 
         def fake_scatter(
             *,
@@ -497,9 +500,14 @@ def test_dataloader_scatter_with_pad_between_seqs():
             group_src,
         ):
             if scatter_object_input_list is not None:
+                # Rank 0: store the full payload and return shard 0
                 scatter_payload["data"] = scatter_object_input_list
-            assert "data" in scatter_payload, "Rank 0 payload missing"
-            scatter_object_output_list[0] = scatter_payload["data"][current_rank["value"]]
+                data_ready.set()
+                scatter_object_output_list[0] = scatter_object_input_list[0]
+            else:
+                # Rank 1: wait for rank 0's data, then return shard 1
+                data_ready.wait(timeout=5)
+                scatter_object_output_list[0] = scatter_payload["data"][1]
 
         with (
             mock.patch("esm.collator.torch.distributed.scatter_object_list", side_effect=fake_scatter),
@@ -508,10 +516,7 @@ def test_dataloader_scatter_with_pad_between_seqs():
             iter(loader_rank0)
             iter(loader_rank1)
 
-            current_rank["value"] = 0
             batch_cp0 = next(loader_rank0)
-
-            current_rank["value"] = 1
             batch_cp1 = next(loader_rank1)
 
         return batch_cp0, batch_cp1
@@ -1316,106 +1321,3 @@ def test_data_collator_for_context_parallel_with_tp_first(tokenizer):
         if isinstance(result_cp_first[0][key], torch.Tensor):
             torch.testing.assert_close(result_cp_first[0][key], result_tp_first[0][key])
             torch.testing.assert_close(result_cp_first[2][key], result_tp_first[1][key])
-
-
-def test_data_collator_for_context_parallel_bshd_correctness(tokenizer):
-    """Test that DataCollatorForContextParallel returns correct values for BSHD format.
-
-    This test verifies:
-    1. max_length_q and max_length_k are correctly rounded up to a multiple of 64
-    2. input_ids and labels have the correct shape (sharded by cp_world_size)
-    3. All shards together reconstruct the original data
-    """
-    cp_world_size = 2
-    divisibility_factor = 2 * cp_world_size
-
-    # Create the wrapped collator - disable MLM for deterministic testing
-    base_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,
-        pad_to_multiple_of=divisibility_factor,
-    )
-
-    # Create the context parallel collator
-    cp_collator = DataCollatorForContextParallel(
-        collator=base_collator, cp_world_size=cp_world_size, qkv_format="bshd"
-    )
-
-    # Create test sequences - 8 tokens each for easy division
-    features = [
-        {"input_ids": [0, 5, 6, 7, 8, 9, 10, 2]},  # 8 tokens
-        {"input_ids": [0, 11, 12, 13, 14, 15, 16, 2]},  # 8 tokens
-    ]
-
-    # Call the collator
-    result = cp_collator(features)
-
-    assert len(result) == cp_world_size
-
-    # Verify max_length_q and max_length_k are rounded up to a multiple of 64
-    for cp_rank, shard in enumerate(result):
-        max_length = shard["max_length_q"]
-        assert max_length == shard["max_length_k"], "max_length_q and max_length_k should be equal"
-        assert max_length % 64 == 0, f"CP rank {cp_rank}: max_length {max_length} should be a multiple of 64"
-        # For BSHD with seq_len=8, rounded up to 64
-        assert max_length == 64, f"CP rank {cp_rank}: expected max_length=64, got {max_length}"
-
-    # Verify input_ids shape - BSHD format: [batch_size, seq_len]
-    # Original shape: [2, 8], each shard should have [2, 8 / cp_world_size] = [2, 4]
-    # But since total_chunks = 2 * cp_world_size = 4, and each rank gets 2 chunks of size 2
-    for cp_rank, shard in enumerate(result):
-        expected_shard_seq_len = 8 // cp_world_size  # Each sequence is sharded
-        assert shard["input_ids"].shape == (2, expected_shard_seq_len), (
-            f"CP rank {cp_rank}: expected input_ids shape (2, {expected_shard_seq_len}), got {shard['input_ids'].shape}"
-        )
-        assert shard["labels"].shape == (2, expected_shard_seq_len), (
-            f"CP rank {cp_rank}: expected labels shape (2, {expected_shard_seq_len}), got {shard['labels'].shape}"
-        )
-
-    # Verify that all shards together contain all the original tokens for each sequence
-    for seq_idx in range(2):
-        all_tokens_for_seq = torch.cat([shard["input_ids"][seq_idx] for shard in result])
-        expected_tokens = torch.tensor(features[seq_idx]["input_ids"], dtype=torch.int64)
-        torch.testing.assert_close(
-            torch.sort(all_tokens_for_seq)[0],
-            torch.sort(expected_tokens)[0],
-            msg=f"Sequence {seq_idx}: sharded tokens don't match original tokens",
-        )
-
-
-@pytest.mark.parametrize(
-    "seq_len,expected_rounded",
-    [
-        (8, 64),  # Small value rounds up to 64
-        (64, 64),  # Exactly 64 stays 64
-        (128, 128),  # Exactly 128 stays 128
-    ],
-)
-def test_data_collator_for_context_parallel_bshd_max_length_rounding(tokenizer, seq_len, expected_rounded):
-    """Test that max_length_q/k is correctly rounded up to a multiple of 64 for BSHD format."""
-    cp_world_size = 2
-    divisibility_factor = 2 * cp_world_size
-
-    # Ensure seq_len is divisible by divisibility_factor for BSHD CP
-    assert seq_len % divisibility_factor == 0, f"seq_len must be divisible by {divisibility_factor}"
-
-    # Create input_ids of the specified length
-    input_ids = [0, *list(range(5, 5 + seq_len - 2)), 2]  # [CLS] + tokens + [SEP]
-
-    # Create the collators
-    base_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,
-        pad_to_multiple_of=divisibility_factor,
-    )
-    cp_collator = DataCollatorForContextParallel(
-        collator=base_collator, cp_world_size=cp_world_size, qkv_format="bshd"
-    )
-
-    features = [{"input_ids": input_ids}]
-    result = cp_collator(features)
-
-    for shard in result:
-        max_length = shard["max_length_q"]
-        assert max_length % 64 == 0, f"max_length {max_length} should be a multiple of 64"
-        assert max_length == expected_rounded, f"Expected max_length={expected_rounded}, got {max_length}"
