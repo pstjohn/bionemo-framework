@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
 import datasets
+import nvtx
 import torch
 from transformer_engine.pytorch.attention.dot_product_attention.context_parallel import pad_thd_sequences_for_cp
 from transformers import DataCollator, DataCollatorForLanguageModeling
@@ -454,6 +455,7 @@ class ContextParallelDataLoaderWrapper:
         self._kick_prefetch()
         return self
 
+    @nvtx.annotate("ContextParallelDataLoaderWrapper __next__", color="blue")
     def __next__(self):
         """Get the batch from the dataloader for the current CP rank."""
         self._prefetch_thread.join()
@@ -485,6 +487,7 @@ class ContextParallelDataLoaderWrapper:
             self._prefetch_thread.join(timeout=10)
             self._prefetch_thread = None
 
+    @nvtx.annotate("ContextParallelDataLoaderWrapper _send_data_to_cp_tp_ranks", color="green")
     def _send_data_to_cp_tp_ranks(self):
         """Send data to all the CP/TP ranks.
 
@@ -715,6 +718,7 @@ def _pt_pad_to_multiple_of(batch: dict[str, Any], pad_to_multiple_of: int, token
 
 # TODO(@jomitchell): Once this gets merged: https://github.com/NVIDIA/TransformerEngine/pull/2387
 # we can replace this with the one in TransformerEngine.
+@nvtx.annotate("collator._split_batch_by_cp_rank", color="green")
 def _split_batch_by_cp_rank(
     cu_seqlens_padded: torch.Tensor | None,
     input_ids_padded: torch.Tensor,
@@ -888,6 +892,7 @@ class BatchType(TypedDict):
     pad_between_seqs: bool
 
 
+@nvtx.annotate("collator._scatter_batch_to_cp_tp_ranks", color="green")
 def _scatter_batch_to_cp_tp_ranks(
     all_batches: list[BatchType] | list[StopIteration], cp_tp_group: torch.distributed.ProcessGroup | None = None
 ) -> BatchType | StopIteration:

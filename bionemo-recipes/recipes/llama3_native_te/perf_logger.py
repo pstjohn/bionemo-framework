@@ -94,26 +94,31 @@ class PerfLogger:
         self.fp8_stats_enabled = args.fp8_stats_config.enabled
 
     @nvtx.annotate("PerfLogger.log_micro_step", color="pink")
-    def log_micro_step(self, batch: dict[str, torch.Tensor], outputs: CausalLMOutputWithPast):
+    def log_micro_step(self, step: int, batch: dict[str, torch.Tensor], outputs: CausalLMOutputWithPast):
         """Store data on micro step for gradient accumulation metrics.
 
         Args:
+            step: The step number.
             batch: The batch of data for the micro step.
             outputs: The outputs of the micro step.
         """
         if self._dist_config.local_rank == 0:
             logger.debug("log_micro_step")
 
+        assert outputs.loss is not None, "Loss is None"
+
         with torch.no_grad():
             self.grad_acc_step_count += 1
-            self.num_tokens += batch["input_ids"].numel()
-            # Use attention_mask to count unpadded tokens (works for both BSHD and THD)
-            if "attention_mask" in batch:
-                self.num_unpadded_tokens += batch["attention_mask"].sum()
-            else:
-                # Fallback for pure sequence packing with no padding: all tokens are unpadded
-                self.num_unpadded_tokens += batch["input_ids"].numel()
             self.running_loss += outputs.loss
+
+            if step % self.logging_frequency == 0 and step > 0:
+                self.num_tokens += batch["input_ids"].numel()
+                # Use attention_mask to count unpadded tokens (works for both BSHD and THD)
+                if "attention_mask" in batch:
+                    self.num_unpadded_tokens += batch["attention_mask"].sum()
+                else:
+                    # Fallback for pure sequence packing with no padding: all tokens are unpadded
+                    self.num_unpadded_tokens += batch["input_ids"].numel()
 
     @nvtx.annotate("PerfLogger.log_step", color="purple")
     def log_step(
@@ -139,28 +144,12 @@ class PerfLogger:
                 f"and can be incremented by log_micro_step()."
             )
 
-            with nvtx.annotate("PerfLogger.log_step grad_norm to_local", color="purple"):
-                if isinstance(grad_norm, DTensor):
-                    grad_norm = grad_norm.to_local()
-
-            with nvtx.annotate("PerfLogger.log_step avg_loss", color="purple"):
-                avg_loss = self.running_loss / self.grad_acc_step_count
-                self.min_loss = torch.minimum(self.min_loss, avg_loss)
+            if isinstance(grad_norm, DTensor):
+                grad_norm = grad_norm.to_local()
 
             now = time.perf_counter()
             step_time = now - self.previous_step_time
             self.previous_step_time = now
-
-            with nvtx.annotate("PerfLogger.log_step metrics update", color="purple"):
-                self.metrics["train/loss"].update(avg_loss)
-                self.metrics["train/learning_rate"].update(lr)
-                self.metrics["train/grad_norm"].update(grad_norm)
-                self.metrics["train/step_time"].update(step_time)
-                self.metrics["train/tokens_per_second_per_gpu"].update(self.num_tokens / step_time)
-                self.metrics["train/unpadded_tokens_per_second_per_gpu"].update(self.num_unpadded_tokens / step_time)
-                self.metrics["train/total_unpadded_tokens_per_batch"].update(
-                    self.num_unpadded_tokens / self.logging_frequency
-                )
 
             if self._profiler is not None:
                 self._profiler.step(step)
@@ -169,6 +158,18 @@ class PerfLogger:
                 debug_api.step()
 
             if step % self.logging_frequency == 0 and step > 0:
+                # Calculate average loss for the window of logging_frequency steps
+                avg_loss = self.running_loss / (self.grad_acc_step_count * self.logging_frequency)
+                self.min_loss = torch.minimum(self.min_loss, avg_loss)
+
+                self.metrics["train/loss"].update(avg_loss)
+                self.metrics["train/learning_rate"].update(lr)
+                self.metrics["train/grad_norm"].update(grad_norm)
+                self.metrics["train/step_time"].update(step_time)
+                self.metrics["train/tokens_per_second_per_gpu"].update(self.num_tokens / step_time)
+                self.metrics["train/unpadded_tokens_per_second_per_gpu"].update(self.num_unpadded_tokens / step_time)
+                self.metrics["train/total_unpadded_tokens_per_batch"].update(self.num_unpadded_tokens)
+
                 memory_allocated = torch.cuda.memory_allocated() / (1024**3)
                 self.metrics["train/gpu_memory_allocated_max_gb"].update(memory_allocated)
                 self.metrics["train/gpu_memory_allocated_mean_gb"].update(memory_allocated)
@@ -185,11 +186,11 @@ class PerfLogger:
                 if self._dist_config.local_rank == 0:
                     logger.info(", ".join([f"{k.split('/')[1]}: {v:.3g}" for k, v in metrics.items()]))
 
-            # Reset gradient accumulation tracking for next step
-            self.num_tokens = 0
-            self.num_unpadded_tokens.zero_()
-            self.running_loss.zero_()
-            self.grad_acc_step_count = 0
+                # Reset running loss and other tracking variables for next window
+                self.running_loss.zero_()
+                self.num_tokens = 0
+                self.num_unpadded_tokens.zero_()
+                self.grad_acc_step_count = 0
 
     def finish(self):
         """Finish the logger and close the progress bar."""

@@ -455,16 +455,16 @@ class ContextParallelDataLoaderWrapper:
         self._kick_prefetch()
         return self
 
+    @nvtx.annotate("ContextParallelDataLoaderWrapper __next__", color="blue")
     def __next__(self):
         """Get the batch from the dataloader for the current CP rank."""
-        with nvtx.annotate("ContextParallelDataLoaderWrapper __next__", color="blue"):
-            self._prefetch_thread.join()
-            result = self._prefetch_result
-            if isinstance(result, StopIteration):
-                self._prefetch_thread = None
-                raise result
-            self._kick_prefetch()
-            return result
+        self._prefetch_thread.join()
+        result = self._prefetch_result
+        if isinstance(result, StopIteration):
+            self._prefetch_thread = None
+            raise result
+        self._kick_prefetch()
+        return result
 
     def _kick_prefetch(self):
         """Start a background thread to prefetch exactly one batch via scatter."""
@@ -718,6 +718,7 @@ def _pt_pad_to_multiple_of(batch: dict[str, Any], pad_to_multiple_of: int, token
 
 # TODO(@jomitchell): Once this gets merged: https://github.com/NVIDIA/TransformerEngine/pull/2387
 # we can replace this with the one in TransformerEngine.
+@nvtx.annotate("collator._split_batch_by_cp_rank", color="green")
 def _split_batch_by_cp_rank(
     cu_seqlens_padded: torch.Tensor | None,
     input_ids_padded: torch.Tensor,
@@ -891,6 +892,7 @@ class BatchType(TypedDict):
     pad_between_seqs: bool
 
 
+@nvtx.annotate("collator._scatter_batch_to_cp_tp_ranks", color="green")
 def _scatter_batch_to_cp_tp_ranks(
     all_batches: list[BatchType] | list[StopIteration], cp_tp_group: torch.distributed.ProcessGroup | None = None
 ) -> BatchType | StopIteration:
