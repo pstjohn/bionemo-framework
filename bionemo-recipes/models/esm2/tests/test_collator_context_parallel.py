@@ -14,8 +14,7 @@
 # limitations under the License.
 
 import copy
-import threading
-from typing import Dict, Iterator, List
+from typing import Iterator
 from unittest import mock
 
 import pytest
@@ -398,29 +397,34 @@ def test_dataloader_scatter_nopadding():
         loader_rank0 = ContextParallelDataLoaderWrapper(_DummyLoader(combined_batch), cp_mesh_rank0)
         loader_rank1 = ContextParallelDataLoaderWrapper(None, cp_mesh_rank1)
 
-        scatter_payload: Dict[str, List[Dict[str, torch.Tensor]]] = {}
-        data_ready = threading.Event()
+        broadcast_state: dict = {}
+        scatter_state: dict = {}
 
-        def fake_scatter(
-            *,
-            scatter_object_output_list,
-            scatter_object_input_list,
-            group,
-            group_src,
-        ):
-            if scatter_object_input_list is not None:
-                # Rank 0: store the full payload and return shard 0
-                scatter_payload["data"] = scatter_object_input_list
-                data_ready.set()
-                scatter_object_output_list[0] = scatter_object_input_list[0]
+        class _DummyWork:
+            def wait(self):
+                pass
+
+            def is_completed(self):
+                return True
+
+        def fake_broadcast(tensor, src=0, group=None, async_op=False):
+            val = tensor[0].item()
+            if val != 0:
+                broadcast_state["size"] = val
             else:
-                # Rank 1: wait for rank 0's data, then return shard 1
-                data_ready.wait(timeout=5)
-                scatter_object_output_list[0] = scatter_payload["data"][1]
+                tensor[0] = broadcast_state["size"]
+
+        def fake_scatter(tensor, scatter_list=None, src=0, group=None, async_op=False):
+            if scatter_list is not None:
+                scatter_state["list"] = [s.clone() for s in scatter_list]
+                tensor.copy_(scatter_list[0][: tensor.numel()])
+            else:
+                tensor.copy_(scatter_state["list"][1][: tensor.numel()])
+            return _DummyWork() if async_op else None
 
         with (
-            mock.patch("esm.collator.torch.distributed.scatter_object_list", side_effect=fake_scatter),
-            mock.patch("esm.collator.torch.distributed.barrier", return_value=None),
+            mock.patch("esm.collator.torch.distributed.broadcast", side_effect=fake_broadcast),
+            mock.patch("esm.collator.torch.distributed.scatter", side_effect=fake_scatter),
         ):
             iter(loader_rank0)
             iter(loader_rank1)
@@ -489,29 +493,34 @@ def test_dataloader_scatter_with_pad_between_seqs():
         loader_rank0 = ContextParallelDataLoaderWrapper(_DummyLoader(combined_batch), cp_mesh_rank0)
         loader_rank1 = ContextParallelDataLoaderWrapper(None, cp_mesh_rank1)
 
-        scatter_payload: Dict[str, List[Dict[str, torch.Tensor]]] = {}
-        data_ready = threading.Event()
+        broadcast_state: dict = {}
+        scatter_state: dict = {}
 
-        def fake_scatter(
-            *,
-            scatter_object_output_list,
-            scatter_object_input_list,
-            group,
-            group_src,
-        ):
-            if scatter_object_input_list is not None:
-                # Rank 0: store the full payload and return shard 0
-                scatter_payload["data"] = scatter_object_input_list
-                data_ready.set()
-                scatter_object_output_list[0] = scatter_object_input_list[0]
+        class _DummyWork:
+            def wait(self):
+                pass
+
+            def is_completed(self):
+                return True
+
+        def fake_broadcast(tensor, src=0, group=None, async_op=False):
+            val = tensor[0].item()
+            if val != 0:
+                broadcast_state["size"] = val
             else:
-                # Rank 1: wait for rank 0's data, then return shard 1
-                data_ready.wait(timeout=5)
-                scatter_object_output_list[0] = scatter_payload["data"][1]
+                tensor[0] = broadcast_state["size"]
+
+        def fake_scatter(tensor, scatter_list=None, src=0, group=None, async_op=False):
+            if scatter_list is not None:
+                scatter_state["list"] = [s.clone() for s in scatter_list]
+                tensor.copy_(scatter_list[0][: tensor.numel()])
+            else:
+                tensor.copy_(scatter_state["list"][1][: tensor.numel()])
+            return _DummyWork() if async_op else None
 
         with (
-            mock.patch("esm.collator.torch.distributed.scatter_object_list", side_effect=fake_scatter),
-            mock.patch("esm.collator.torch.distributed.barrier", return_value=None),
+            mock.patch("esm.collator.torch.distributed.broadcast", side_effect=fake_broadcast),
+            mock.patch("esm.collator.torch.distributed.scatter", side_effect=fake_scatter),
         ):
             iter(loader_rank0)
             iter(loader_rank1)

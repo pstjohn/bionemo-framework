@@ -19,7 +19,6 @@ This should eventually get moved to a separate package, or possibly upstreamed i
 """
 
 import logging
-import threading
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
@@ -403,7 +402,17 @@ class DataCollatorForContextParallel:
 
 
 class ContextParallelDataLoaderWrapper:
-    """A dataloader that is aware of context and tensor parallelism."""
+    """A dataloader that is aware of context and tensor parallelism.
+
+    Uses tensor-based broadcast + scatter (with async_op) to distribute batch data from rank 0 to all CP/TP ranks.
+    This replaces the previous pickle-based scatter_object_list + threading approach.
+
+    Protocol per batch:
+    1. Rank 0 packs each shard into an int64 buffer via _pack_batch.
+    2. Broadcast (sync) a 1-element int64 tensor: the required buffer size, or -1 for StopIteration.
+    3. Scatter (async) the packed buffers to all ranks.
+    4. Each rank unpacks its buffer via _unpack_batch.
+    """
 
     def __init__(
         self,
@@ -432,9 +441,14 @@ class ContextParallelDataLoaderWrapper:
         self.cp_tp_group = cp_tp_mesh.get_group()
         self.num_cp_tp_ranks = cp_tp_mesh.size()
         self._iterator = None
-        self._prefetch_thread: threading.Thread | None = None
-        self._prefetch_result: Any = None
-        self._cuda_device: int | None = None
+
+        # Async scatter state
+        self._buf_capacity: int = 0
+        self._send_block: torch.Tensor | None = None  # [num_ranks, capacity], rank 0 only
+        self._recv_buf: torch.Tensor | None = None  # [capacity]
+        self._recv_view: torch.Tensor | None = None  # view into _recv_buf for current scatter
+        self._size_buf = torch.zeros(1, dtype=torch.int64)
+        self._async_work: torch.distributed.Work | None = None
 
         logger.debug(
             "Created ContextParallelDataLoaderWrapper on global rank %s, cp rank %s",
@@ -446,83 +460,95 @@ class ContextParallelDataLoaderWrapper:
         """Make the dataloader iterable."""
         if self.cp_tp_rank == 0:
             self._iterator = iter(self.dataloader)  # < --- collator output.
-        self.close()
-        # Capture CUDA device from main thread; torch.cuda.set_device is per-thread,
-        # so the background thread needs to set it explicitly.
-        self._cuda_device = torch.cuda.current_device() if torch.cuda.is_available() else None
-        self._kick_prefetch()
+        self.close()  # Wait for any pending async work
+        self._kick_async_prefetch()
         return self
 
     def __next__(self):
         """Get the batch from the dataloader for the current CP rank."""
-        self._prefetch_thread.join()
-        result = self._prefetch_result
-        if isinstance(result, StopIteration):
-            self._prefetch_thread = None
-            raise result
-        self._kick_prefetch()
+        # Wait for the async scatter from the previous _kick_async_prefetch
+        if self._async_work is not None:
+            self._async_work.wait()
+            self._async_work = None
+
+        buf_size = int(self._size_buf[0].item())
+        if buf_size < 0:
+            raise StopIteration()
+
+        result = _unpack_batch(self._recv_view)
+
+        # Kick off prefetch for the NEXT batch
+        self._kick_async_prefetch()
+
         return result
 
-    def _kick_prefetch(self):
-        """Start a background thread to prefetch exactly one batch via scatter."""
-        self._prefetch_thread = threading.Thread(target=self._do_one_prefetch, daemon=True)
-        self._prefetch_thread.start()
+    def _ensure_buf_capacity(self, needed: int):
+        """Ensure scatter buffers are at least *needed* elements wide."""
+        if needed <= self._buf_capacity:
+            return
+        new_cap = max(needed, self._buf_capacity * 2, 4096)
+        self._buf_capacity = new_cap
+        self._recv_buf = torch.zeros(new_cap, dtype=torch.int64)
+        if self.cp_tp_rank == 0:
+            self._send_block = torch.zeros(self.num_cp_tp_ranks, new_cap, dtype=torch.int64)
 
-    def _do_one_prefetch(self):
-        """Fetch one batch in the background. Stores result in _prefetch_result."""
-        if self._cuda_device is not None:
-            torch.cuda.set_device(self._cuda_device)
-        try:
-            self._prefetch_result = self._send_data_to_cp_tp_ranks()
-        except Exception:
-            # Process group may have been destroyed; signal stop.
-            self._prefetch_result = StopIteration()
+    def _kick_async_prefetch(self):
+        """Broadcast buffer size, then async-scatter packed batch buffers."""
+        # Step 1: Rank 0 gets next batch and packs it
+        packed: list[torch.Tensor] | None = None
+        if self.cp_tp_rank == 0:
+            try:
+                combined_batch = next(self._iterator)
+                packed = [_pack_batch(b) for b in combined_batch]
+                max_size = max(p.numel() for p in packed)
+                self._size_buf[0] = max_size
+            except StopIteration:
+                self._size_buf[0] = -1
+
+        # Step 2: Sync broadcast size (1 element, negligible latency)
+        torch.distributed.broadcast(self._size_buf, src=0, group=self.cp_tp_group)
+
+        buf_size = int(self._size_buf[0].item())
+        if buf_size < 0:
+            return  # __next__ will see -1 and raise StopIteration
+
+        # Step 3: Ensure buffers are large enough
+        self._ensure_buf_capacity(buf_size)
+
+        # Step 4: Rank 0 fills send block
+        if self.cp_tp_rank == 0:
+            assert packed is not None
+            assert self._send_block is not None
+            for i, p in enumerate(packed):
+                n = p.numel()
+                self._send_block[i, :n] = p
+                if n < buf_size:
+                    self._send_block[i, n:buf_size] = 0
+            scatter_list = [self._send_block[i, :buf_size].contiguous() for i in range(self.num_cp_tp_ranks)]
+        else:
+            scatter_list = None
+
+        # Step 5: Async scatter (overlaps with GPU compute)
+        assert self._recv_buf is not None
+        # _recv_buf is a contiguous 1-D tensor allocated by _ensure_buf_capacity,
+        # so slicing from 0 is always contiguous. Store the view for __next__.
+        self._recv_view = self._recv_buf[:buf_size]
+        self._async_work = torch.distributed.scatter(
+            self._recv_view,
+            scatter_list=scatter_list,
+            src=0,
+            group=self.cp_tp_group,
+            async_op=True,
+        )
 
     def close(self):
-        """Stop the prefetch thread. Must be called before destroy_process_group()."""
-        if self._prefetch_thread is not None:
-            self._prefetch_thread.join(timeout=10)
-            self._prefetch_thread = None
-
-    def _send_data_to_cp_tp_ranks(self):
-        """Send data to all the CP/TP ranks.
-
-        This function will get the batch from the dataloader on CP rank 0, and then determine
-        the shards for all the different CP group members.
-        combined_batch = [<cp_rank_0_shard>, <cp_rank_1_shard>, ..., <cp_rank_n_shard>]
-        Then it will scatter the shards to the different CP group members.
-        The shards are then combined into a single batch and returned to the caller
-        for the current CP rank.
-
-        If tensor parallelism is also being used, the combined batch will look like:
-        combined_batch = [<cp0_shard>, <cp0_shard>, ..., <cp1_shard>, <cp1_shard>, ...]
-        where there are cp_world_size shards, and each shard is replicated tp_world_size times. The ordering of the
-        shards depends on which dimension forms the rows in the flattened mesh.
-
-        Scalability:
-            Rank 0's work grows linearly with CP size, but the other ranks do not need to store all the shards so they
-            do not grow linearly with CP size.
-
-        Args:
-            None
-
-        Returns:
-            batch: The batch for the current CP/TP rank.
-
-        """
-        try:
-            combined_batch = next(self._iterator) if self.cp_tp_rank == 0 else None
-        except StopIteration as ex:
-            # If we encounter a StopIteration in the dataloader, we want to raise this error on all the CP ranks, so
-            # that the dataloader can be restarted.
-            combined_batch = [ex] * self.num_cp_tp_ranks
-
-        batch_on_this_rank = _scatter_batch_to_cp_tp_ranks(combined_batch, self.cp_tp_group)
-
-        if isinstance(batch_on_this_rank, StopIteration):
-            raise batch_on_this_rank
-
-        return batch_on_this_rank
+        """Wait for any pending async work. Must be called before destroy_process_group()."""
+        if self._async_work is not None:
+            try:
+                self._async_work.wait()
+            except Exception:
+                pass
+            self._async_work = None
 
     def state_dict(self):
         """Get the state dict by delegating to the dataloader."""
@@ -887,25 +913,136 @@ class BatchType(TypedDict):
     pad_between_seqs: bool
 
 
-def _scatter_batch_to_cp_tp_ranks(
-    all_batches: list[BatchType] | list[StopIteration], cp_tp_group: torch.distributed.ProcessGroup | None = None
-) -> BatchType | StopIteration:
-    """Scatter a batch to all the CP ranks.
+# ---------------------------------------------------------------------------
+# Tensor-based batch packing for scatter (replaces pickle-based scatter_object_list)
+# ---------------------------------------------------------------------------
+
+# Ordered list of all known batch keys.
+_BATCH_KEYS: list[str] = [
+    "input_ids",
+    "labels",
+    "shift_labels",
+    "cu_seq_lens_q",
+    "cu_seq_lens_k",
+    "cu_seq_lens_q_padded",
+    "cu_seq_lens_k_padded",
+    "max_length_q",
+    "max_length_k",
+    "pad_between_seqs",
+    "attention_mask",
+    "position_ids",
+]
+_KEY_TO_IDX: dict[str, int] = {k: i for i, k in enumerate(_BATCH_KEYS)}
+_IDX_TO_KEY: dict[int, str] = dict(enumerate(_BATCH_KEYS))
+
+# Value-type tags stored in the header.
+_VTYPE_NONE = 0
+_VTYPE_BOOL_FALSE = 1
+_VTYPE_BOOL_TRUE = 2
+_VTYPE_INT = 3
+_VTYPE_TENSOR_INT32 = 4
+_VTYPE_TENSOR_INT64 = 5
+
+# Fixed header: [num_entries, reserved, ...entry descriptors...]
+# Each entry descriptor is 5 int64s: (key_idx, value_type, dim0, dim1, numel)
+_DESCRIPTOR_SIZE = 5
+_HEADER_FIXED = 2  # num_entries + reserved
+_MAX_ENTRIES = len(_BATCH_KEYS)
+_HEADER_SIZE = _HEADER_FIXED + _MAX_ENTRIES * _DESCRIPTOR_SIZE
+
+
+def _pack_batch(batch: dict) -> torch.Tensor:
+    """Pack a batch dict into a flat int64 tensor for scatter.
 
     Args:
-        all_batches (list[BatchType] | list[StopIteration]): A list of already-sharded batches to scatter to the CP/TP
-            ranks.
-        cp_tp_group (torch.distributed.ProcessGroup | None): The process group to scatter the batches to.
+        batch: A batch dictionary with string keys and tensor/scalar/None values.
 
     Returns:
-        BatchType | StopIteration: The batch on this rank.
+        A 1-D int64 tensor containing the packed batch.
     """
-    scatter_object_output_list = [None]
-    # Note: This does not provide an async_op handle. Thus its blocking.
-    torch.distributed.scatter_object_list(
-        scatter_object_output_list=scatter_object_output_list,
-        scatter_object_input_list=all_batches,
-        group=cp_tp_group,
-        group_src=0,
-    )
-    return scatter_object_output_list[0]
+    header = torch.zeros(_HEADER_SIZE, dtype=torch.int64)
+    data_parts: list[torch.Tensor] = []
+    entry_idx = 0
+
+    for key, value in batch.items():
+        if key not in _KEY_TO_IDX:
+            continue
+        kid = _KEY_TO_IDX[key]
+        desc_offset = _HEADER_FIXED + entry_idx * _DESCRIPTOR_SIZE
+
+        if value is None:
+            header[desc_offset] = kid
+            header[desc_offset + 1] = _VTYPE_NONE
+            # dim0, dim1, numel all 0
+        elif isinstance(value, bool):
+            header[desc_offset] = kid
+            header[desc_offset + 1] = _VTYPE_BOOL_TRUE if value else _VTYPE_BOOL_FALSE
+        elif isinstance(value, int):
+            header[desc_offset] = kid
+            header[desc_offset + 1] = _VTYPE_INT
+            header[desc_offset + 2] = value  # store the int value in dim0 slot
+        elif isinstance(value, torch.Tensor):
+            flat = value.reshape(-1).to(torch.int64)
+            header[desc_offset] = kid
+            if value.dtype == torch.int32:
+                header[desc_offset + 1] = _VTYPE_TENSOR_INT32
+            else:
+                header[desc_offset + 1] = _VTYPE_TENSOR_INT64
+            header[desc_offset + 2] = value.shape[0] if value.ndim >= 1 else 1
+            header[desc_offset + 3] = value.shape[1] if value.ndim >= 2 else 0
+            header[desc_offset + 4] = flat.numel()
+            data_parts.append(flat)
+        else:
+            continue
+
+        entry_idx += 1
+
+    header[0] = entry_idx
+
+    if data_parts:
+        return torch.cat([header, *data_parts])
+    return header
+
+
+def _unpack_batch(flat: torch.Tensor) -> dict:
+    """Unpack a flat int64 tensor back into a batch dict.
+
+    Args:
+        flat: A 1-D int64 tensor produced by _pack_batch.
+
+    Returns:
+        A batch dictionary reconstructed from the packed tensor.
+    """
+    num_entries = int(flat[0].item())
+    result: dict = {}
+    data_offset = _HEADER_SIZE
+
+    for i in range(num_entries):
+        desc_offset = _HEADER_FIXED + i * _DESCRIPTOR_SIZE
+        kid = int(flat[desc_offset].item())
+        vtype = int(flat[desc_offset + 1].item())
+        key = _IDX_TO_KEY[kid]
+
+        if vtype == _VTYPE_NONE:
+            result[key] = None
+        elif vtype == _VTYPE_BOOL_FALSE:
+            result[key] = False
+        elif vtype == _VTYPE_BOOL_TRUE:
+            result[key] = True
+        elif vtype == _VTYPE_INT:
+            result[key] = int(flat[desc_offset + 2].item())
+        elif vtype in (_VTYPE_TENSOR_INT32, _VTYPE_TENSOR_INT64):
+            dim0 = int(flat[desc_offset + 2].item())
+            dim1 = int(flat[desc_offset + 3].item())
+            numel = int(flat[desc_offset + 4].item())
+            tensor_data = flat[data_offset : data_offset + numel].clone()
+            data_offset += numel
+            if dim1 > 0:
+                tensor_data = tensor_data.reshape(dim0, dim1)
+            elif dim0 > 0:
+                tensor_data = tensor_data.reshape(dim0)
+            if vtype == _VTYPE_TENSOR_INT32:
+                tensor_data = tensor_data.to(torch.int32)
+            result[key] = tensor_data
+
+    return result
