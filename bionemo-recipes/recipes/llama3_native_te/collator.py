@@ -545,7 +545,8 @@ class ContextParallelDataLoaderWrapper:
 
         """
         try:
-            combined_batch = next(self._iterator) if self.cp_tp_rank == 0 else None
+            with nvtx.annotate("ContextParallelDataLoaderWrapper next batch", color="green"):
+                combined_batch = next(self._iterator) if self.cp_tp_rank == 0 else None
         except StopIteration as ex:
             # If we encounter a StopIteration in the dataloader, we want to raise this error on all the CP ranks, so
             # that the dataloader can be restarted.
