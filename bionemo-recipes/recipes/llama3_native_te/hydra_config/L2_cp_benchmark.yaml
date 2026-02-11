@@ -2,7 +2,7 @@ defaults:
   - defaults
   - _self_
 
-config_name_or_path: ./model_configs/meta-llama/Llama-3.2-1B
+config_name_or_path: ./model_configs/meta-llama/Llama-3.1-8B
 
 config_kwargs:
   attn_input_format: "bshd"
