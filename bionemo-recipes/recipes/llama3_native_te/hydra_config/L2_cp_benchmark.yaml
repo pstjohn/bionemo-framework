@@ -26,7 +26,8 @@ dataset:
 
 wandb:
   name: "llama3-cp-benchmark"
-  mode: "offline"
+  project: "bionemo-recipes-pstjohn"
+  mode: "online"
 
 lr_scheduler_kwargs:
   num_warmup_steps: 10
@@ -38,4 +39,12 @@ checkpoint:
   resume_from_checkpoint: false
 
 logger:
-  frequency: 1
+  frequency: 10
+
+fp8_config:
+  enabled: false
+  fp8_recipe: transformer_engine.common.recipe.MXFP8BlockScaling
+  fp8_format: "HYBRID"
+  fp8_recipe_kwargs: {}
+  quantized_model_init_kwargs:
+    enabled: false
