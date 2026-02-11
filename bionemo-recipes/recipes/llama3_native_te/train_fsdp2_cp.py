@@ -30,7 +30,7 @@ from transformer_engine.common.recipe import Format
 
 from checkpoint import load_checkpoint_fsdp2, save_checkpoint_fsdp2, save_final_model_fsdp2, should_save_checkpoint
 from collator import ContextParallelDataLoaderWrapper, DataCollatorForContextParallel
-from dataset import create_bshd_dataloader, create_thd_dataloader
+from dataset import create_bshd_dataloader, create_mock_dataloader, create_thd_dataloader
 from distributed_config import DistributedConfig
 from modeling_llama_te import NVLlamaConfig, NVLlamaForCausalLM
 from perf_logger import PerfLogger
@@ -119,7 +119,11 @@ def main(args: DictConfig) -> float | None:
         logger.info("pad_sequences_to_be_divisible_by is not provided, using cp_mesh.size() * 2")
         OmegaConf.update(args, "dataset.pad_sequences_to_be_divisible_by", device_mesh["cp"].size() * 2)
     if device_mesh["cp"].get_local_rank() == 0:
-        if args.use_sequence_packing:
+        if args.use_mock_dataset:
+            train_dataloader, dataset_or_sampler = create_mock_dataloader(
+                dist_config, vocab_size=config.vocab_size, **args.dataset
+            )
+        elif args.use_sequence_packing:
             train_dataloader, dataset_or_sampler = create_thd_dataloader(dist_config, **args.dataset)
         else:
             train_dataloader, dataset_or_sampler = create_bshd_dataloader(dist_config, **args.dataset)
