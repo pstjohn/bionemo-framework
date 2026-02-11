@@ -127,7 +127,11 @@ class PerfLogger:
 
                 metrics = self.metrics.compute()
                 self.metrics.reset()
-                metrics["train/global_step"] = torch.tensor(step, dtype=torch.int64)
+                metrics = {
+                    k: v.detach().cpu().item() if isinstance(v, torch.Tensor) and v.dim() == 0 else v
+                    for k, v in metrics.items()
+                }
+                metrics["train/global_step"] = step
 
                 if self._dist_config.is_main_process():
                     wandb.log(metrics, step=step)

@@ -147,10 +147,6 @@ class PerfLogger:
             if isinstance(grad_norm, DTensor):
                 grad_norm = grad_norm.to_local()
 
-            now = time.perf_counter()
-            step_time = now - self.previous_step_time
-            self.previous_step_time = now
-
             if self._profiler is not None:
                 self._profiler.step(step)
 
@@ -161,6 +157,11 @@ class PerfLogger:
                 # Calculate average loss over all micro steps in the logging window
                 avg_loss = self.running_loss / self.grad_acc_step_count
                 self.min_loss = torch.minimum(self.min_loss, avg_loss)
+
+                # Calculate an average step time over all steps in the logging window
+                now = time.perf_counter()
+                step_time = (now - self.previous_step_time) / self.logging_frequency
+                self.previous_step_time = now
 
                 # For some reason, these trigger a CudaStreamSynchronize call, which blocks the dataloader in the next
                 # step. We therefore only update these once every logging_frequency steps.
@@ -178,7 +179,11 @@ class PerfLogger:
 
                 metrics = self.metrics.compute()
                 self.metrics.reset()
-                metrics["train/global_step"] = torch.tensor(step, dtype=torch.int64)
+                metrics = {
+                    k: v.detach().cpu().item() if isinstance(v, torch.Tensor) and v.dim() == 0 else v
+                    for k, v in metrics.items()
+                }
+                metrics["train/global_step"] = step
 
                 if self._dist_config.is_main_process():
                     wandb.log(metrics, step=step)

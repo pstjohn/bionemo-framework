@@ -1068,7 +1068,9 @@ def test_data_collator_for_context_parallel_thd_correctness(tokenizer):
     )
 
     # Create the context parallel collator
-    cp_collator = DataCollatorForContextParallel(collator=base_collator, cp_world_size=cp_world_size, qkv_format="thd")
+    cp_collator = DataCollatorForContextParallel(
+        collator=base_collator, device_mesh=_DummyCollatorMesh(cp_size=cp_world_size), qkv_format="thd"
+    )
 
     # Create test sequences - 8 tokens each for easy division
     features = [
@@ -1148,7 +1150,9 @@ def test_data_collator_for_context_parallel_thd_max_length_rounding(tokenizer, m
         collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         pad_sequences_to_be_divisible_by=divisibility_factor,
     )
-    cp_collator = DataCollatorForContextParallel(collator=base_collator, cp_world_size=cp_world_size, qkv_format="thd")
+    cp_collator = DataCollatorForContextParallel(
+        collator=base_collator, device_mesh=_DummyCollatorMesh(cp_size=cp_world_size), qkv_format="thd"
+    )
 
     # Use a single sequence to ensure max_seqlen is exactly what we expect after padding
     features = [{"input_ids": input_ids}]

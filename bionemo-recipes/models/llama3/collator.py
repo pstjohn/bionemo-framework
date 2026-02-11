@@ -295,8 +295,12 @@ class TokenPackingDataset(torch.utils.data.IterableDataset):
                 else:
                     # Calculate how many padded tokens are already in the batch
                     tokens_in_batch = current_length - self._padded_len(len(sample["input_ids"]))
-                    # Calculate how many tokens we can fit from this sample
+                    # Calculate how many tokens we can fit from this sample, ensuring the
+                    # padded length doesn't exceed the remaining capacity.
                     tokens_available = self.max_tokens_per_batch - tokens_in_batch
+                    if self.pad_sequences_to_be_divisible_by is not None:
+                        d = self.pad_sequences_to_be_divisible_by
+                        tokens_available = (tokens_available // d) * d
                     first_part, remaining_part = _split_sample_by_num_tokens(sample, tokens_available)
                     yield [*samples, first_part]
                     samples = [remaining_part]
@@ -488,9 +492,13 @@ class ContextParallelDataLoaderWrapper:
     @nvtx.annotate("ContextParallelDataLoaderWrapper __next__", color="blue")
     def __next__(self):
         """Get the batch from the dataloader for the current CP rank."""
-        self._prefetch_thread.join()
+        if self._prefetch_thread is not None:
+            self._prefetch_thread.join()
         result = self._prefetch_result
         if isinstance(result, StopIteration):
+            self._prefetch_thread = None
+            raise result
+        if isinstance(result, Exception):
             self._prefetch_thread = None
             raise result
         self._kick_prefetch()
@@ -507,9 +515,10 @@ class ContextParallelDataLoaderWrapper:
             torch.cuda.set_device(self._cuda_device)
         try:
             self._prefetch_result = self._send_data_to_cp_tp_ranks()
-        except Exception:
-            # Process group may have been destroyed; signal stop.
-            self._prefetch_result = StopIteration()
+        except StopIteration as e:
+            self._prefetch_result = e
+        except Exception as e:
+            self._prefetch_result = e
 
     def close(self):
         """Stop the prefetch thread. Must be called before destroy_process_group()."""
