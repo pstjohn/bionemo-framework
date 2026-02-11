@@ -95,7 +95,7 @@ def _run_steps(perf_logger, losses, grad_acc_steps=1):
 
 def _get_logged_losses(mock_wandb):
     """Extract reported loss values from wandb.log calls."""
-    return [call[0][0]["train/loss"].item() for call in mock_wandb.log.call_args_list]
+    return [call[0][0]["train/loss"] for call in mock_wandb.log.call_args_list]
 
 
 class TestPerfLoggerLoss:

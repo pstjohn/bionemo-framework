@@ -22,6 +22,7 @@ import torchmetrics
 import torchmetrics.text
 import wandb
 from omegaconf import DictConfig, OmegaConf
+from torch.distributed.tensor import DTensor
 from tqdm import tqdm
 from transformers.modeling_outputs import MaskedLMOutput
 
@@ -83,7 +84,7 @@ class PerfLogger:
         step: int,
         batch: dict[str, torch.Tensor],
         outputs: MaskedLMOutput,
-        grad_norm: torch.Tensor,
+        grad_norm: torch.Tensor | DTensor,
         lr: float,
     ):
         """Log a step to the logger and wandb.
@@ -96,31 +97,39 @@ class PerfLogger:
             lr: The learning rate of the step.
         """
         with torch.no_grad():
-            num_tokens = batch["input_ids"].numel()
-            # 1 is the padding token for ESM-2.
-            num_unpadded_tokens = batch["input_ids"][batch["input_ids"] != 1].numel()
-
-            self.min_loss = torch.minimum(self.min_loss, outputs.loss)
-            step_time, self.previous_step_time = time.perf_counter() - self.previous_step_time, time.perf_counter()
-
-            self.metrics["train/loss"].update(outputs.loss)
-            self.metrics["train/learning_rate"].update(lr)
-            self.metrics["train/grad_norm"].update(grad_norm)
-            self.metrics["train/step_time"].update(step_time)
-            self.metrics["train/tokens_per_second_per_gpu"].update(num_tokens / step_time)
-            self.metrics["train/unpadded_tokens_per_second_per_gpu"].update(num_unpadded_tokens / step_time)
-            self.metrics["train/total_unpadded_tokens_per_batch"].update(num_unpadded_tokens / self.logging_frequency)
-
-            # Handle sequence packing for torchmetrics calculation.
-            if outputs.logits.dim() < 3:
-                outputs.logits = outputs.logits.unsqueeze(0)
-
-            self.metrics["train/perplexity"].update(outputs.logits, batch["labels"])
+            # FSDP2's clip_grad_norm_ returns a DTensor; convert to local tensor for torchmetrics compatibility.
+            if isinstance(grad_norm, DTensor):
+                grad_norm = grad_norm.to_local()
 
             if self.fp8_stats_enabled:
                 debug_api.step()
 
             if step % self.logging_frequency == 0 and step > 0:
+                num_tokens = batch["input_ids"].numel()
+                # 1 is the padding token for ESM-2.
+                num_unpadded_tokens = batch["input_ids"][batch["input_ids"] != 1].numel()
+
+                self.min_loss = torch.minimum(self.min_loss, outputs.loss)
+                elapsed_time, self.previous_step_time = (
+                    time.perf_counter() - self.previous_step_time,
+                    time.perf_counter(),
+                )
+                step_time = elapsed_time / self.logging_frequency
+
+                self.metrics["train/loss"].update(outputs.loss)
+                self.metrics["train/learning_rate"].update(lr)
+                self.metrics["train/grad_norm"].update(grad_norm)
+                self.metrics["train/step_time"].update(step_time)
+                self.metrics["train/tokens_per_second_per_gpu"].update(num_tokens / step_time)
+                self.metrics["train/unpadded_tokens_per_second_per_gpu"].update(num_unpadded_tokens / step_time)
+                self.metrics["train/total_unpadded_tokens_per_batch"].update(num_unpadded_tokens)
+
+                # Handle sequence packing for torchmetrics calculation.
+                if outputs.logits.dim() < 3:
+                    outputs.logits = outputs.logits.unsqueeze(0)
+
+                self.metrics["train/perplexity"].update(outputs.logits, batch["labels"])
+
                 memory_allocated = torch.cuda.memory_allocated() / (1024**3)
                 self.metrics["train/gpu_memory_allocated_max_gb"].update(memory_allocated)
                 self.metrics["train/gpu_memory_allocated_mean_gb"].update(memory_allocated)
