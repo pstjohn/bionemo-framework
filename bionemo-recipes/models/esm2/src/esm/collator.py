@@ -510,7 +510,12 @@ class ContextParallelDataLoaderWrapper:
         self._prefetch_thread.start()
 
     def _do_one_prefetch(self):
-        """Fetch one batch in the background. Stores result in _prefetch_result."""
+        """Fetch one batch in the background.
+
+        This function calls the _send_data_to_cp_tp_ranks function to materialize the next batches for all ranks in the
+        given CP/TP group, and uses torch.distributed.scatter_object_list to scatter these batches to their
+        corresponding ranks. The result is stored in _prefetch_result, and returned when __next__ is called.
+        """
         if self._cuda_device is not None:
             torch.cuda.set_device(self._cuda_device)
         try:
