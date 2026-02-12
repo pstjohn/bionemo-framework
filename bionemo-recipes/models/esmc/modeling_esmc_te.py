@@ -17,21 +17,25 @@
 
 This module provides HuggingFace-compatible ESMC model classes using NVIDIA's TransformerEngine
 for optimized attention and MLP computation. The model is an encoder-only protein language model
-with bidirectional attention, RoPE, SwiGLU activation, and QK LayerNorm.
+with bidirectional attention, RoPE, SwiGLU activation, and full d_model QK LayerNorm.
+
+Unlike models that use TE's TransformerLayer (which applies per-head QK norm), this implementation
+uses lower-level TE components (LayerNormLinear, DotProductAttention, LayerNormMLP) to apply QK
+LayerNorm across the full hidden dimension, exactly matching the reference ESMC model.
 
 Reference: EvolutionaryScale's ESMC-300M (esm PyPI package).
 """
 
-from typing import ClassVar, Literal, Optional, Unpack
+from typing import ClassVar, Literal, Optional, TypedDict, Unpack
 
 import torch
 import transformer_engine.pytorch
 from torch import nn
 from torch.nn import CrossEntropyLoss
-from transformer_engine.pytorch.attention.rope import RotaryPositionEmbedding
-from transformers import PretrainedConfig, PreTrainedModel
+from transformer_engine.pytorch.attention.rope import RotaryPositionEmbedding, apply_rotary_pos_emb
+from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_outputs import BaseModelOutput, MaskedLMOutput
-from transformers.utils.generic import TransformersKwargs
+from transformers.modeling_utils import PreTrainedModel
 
 
 AUTO_MAP = {
@@ -39,6 +43,18 @@ AUTO_MAP = {
     "AutoModel": "modeling_esmc_te.NVEsmcModel",
     "AutoModelForMaskedLM": "modeling_esmc_te.NVEsmcForMaskedLM",
 }
+
+
+class TransformersKwargs(TypedDict):
+    """Transformers v4 does not export a TransformersKwargs class, so we define our own."""
+
+    cu_seq_lens_q: Optional[torch.Tensor]
+    cu_seq_lens_k: Optional[torch.Tensor]
+    max_length_q: Optional[int]
+    max_length_k: Optional[int]
+    pad_between_seqs: Optional[int]
+    cu_seqlens_q_padded: Optional[torch.Tensor]
+    cu_seqlens_k_padded: Optional[torch.Tensor]
 
 
 class NVEsmcConfig(PretrainedConfig):
@@ -60,8 +76,6 @@ class NVEsmcConfig(PretrainedConfig):
         # TE-specific options
         attn_input_format: Literal["bshd", "thd"] = "bshd",
         self_attn_mask_type: str = "padding",
-        fuse_qkv_params: bool = True,
-        qkv_weight_interleaved: bool = True,
         tie_word_embeddings: bool = False,
         **kwargs,
     ):
@@ -79,8 +93,6 @@ class NVEsmcConfig(PretrainedConfig):
             pad_token_id: Padding token ID.
             attn_input_format: Attention input format for TE ("bshd" or "thd").
             self_attn_mask_type: Attention mask type ("padding" for bidirectional).
-            fuse_qkv_params: Whether to fuse QKV parameters in TE.
-            qkv_weight_interleaved: Whether QKV weights are interleaved.
             tie_word_embeddings: Whether to tie input/output embeddings.
             **kwargs: Additional config options.
         """
@@ -99,8 +111,187 @@ class NVEsmcConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.attn_input_format = attn_input_format
         self.self_attn_mask_type = self_attn_mask_type
-        self.fuse_qkv_params = fuse_qkv_params
-        self.qkv_weight_interleaved = qkv_weight_interleaved
+
+
+class EsmcTransformerBlock(nn.Module):
+    """Custom ESMC transformer block using lower-level TE components.
+
+    This block implements full d_model QK LayerNorm (matching the reference ESMC model)
+    by using individual TE components instead of TE's TransformerLayer which only supports
+    per-head QK norm.
+
+    Architecture:
+        1. LayerNormLinear: pre-attention LayerNorm + QKV projection
+        2. LayerNorm(d_model): full-dimension Q normalization
+        3. LayerNorm(d_model): full-dimension K normalization
+        4. RoPE application
+        5. DotProductAttention: flash/fused attention
+        6. Linear: output projection (residue scaling absorbed in weights)
+        7. LayerNormMLP: pre-FFN LayerNorm + SwiGLU MLP (residue scaling absorbed in fc2)
+    """
+
+    def __init__(self, config: NVEsmcConfig, layer_idx: int):
+        """Initialize EsmcTransformerBlock."""
+        super().__init__()
+        hidden_size = config.hidden_size
+        num_heads = config.num_attention_heads
+        head_dim = hidden_size // num_heads
+        device = "meta" if torch.get_default_device() == torch.device("meta") else "cuda"
+
+        def _init_method(x):
+            torch.nn.init.normal_(x, mean=0.0, std=config.initializer_range)
+
+        # Pre-attention LayerNorm + QKV projection (fused)
+        self.layernorm_qkv = transformer_engine.pytorch.LayerNormLinear(
+            hidden_size,
+            3 * hidden_size,
+            bias=False,
+            eps=config.layer_norm_eps,
+            params_dtype=config.torch_dtype,
+            device=device,
+            init_method=_init_method,
+        )
+
+        # Full d_model QK LayerNorm (matching reference model exactly)
+        self.q_norm = transformer_engine.pytorch.LayerNorm(
+            hidden_size,
+            eps=config.layer_norm_eps,
+            params_dtype=config.torch_dtype,
+            device=device,
+        )
+        self.k_norm = transformer_engine.pytorch.LayerNorm(
+            hidden_size,
+            eps=config.layer_norm_eps,
+            params_dtype=config.torch_dtype,
+            device=device,
+        )
+
+        # Attention computation (flash/fused attention backends)
+        self.core_attention = transformer_engine.pytorch.DotProductAttention(
+            num_attention_heads=num_heads,
+            kv_channels=head_dim,
+            num_gqa_groups=num_heads,
+            attention_dropout=0,
+            qkv_format=config.attn_input_format,
+            attn_mask_type=config.self_attn_mask_type,
+            layer_number=layer_idx + 1,
+        )
+
+        # Output projection
+        self.proj = transformer_engine.pytorch.Linear(
+            hidden_size,
+            hidden_size,
+            bias=False,
+            params_dtype=config.torch_dtype,
+            device=device,
+            init_method=_init_method,
+        )
+
+        # FFN: pre-LayerNorm + SwiGLU MLP (fused)
+        self.layernorm_mlp = transformer_engine.pytorch.LayerNormMLP(
+            hidden_size,
+            config.intermediate_size,
+            bias=False,
+            eps=config.layer_norm_eps,
+            activation="swiglu",
+            params_dtype=config.torch_dtype,
+            device=device,
+            init_method=_init_method,
+            output_layer_init_method=_init_method,
+        )
+
+        self.num_heads = num_heads
+        self.head_dim = head_dim
+        self.attn_input_format = config.attn_input_format
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        rotary_pos_emb: Optional[torch.Tensor] = None,
+        cu_seqlens_q: Optional[torch.Tensor] = None,
+        cu_seqlens_kv: Optional[torch.Tensor] = None,
+        cu_seqlens_q_padded: Optional[torch.Tensor] = None,
+        cu_seqlens_kv_padded: Optional[torch.Tensor] = None,
+        max_seqlen_q: Optional[int] = None,
+        max_seqlen_kv: Optional[int] = None,
+        pad_between_seqs: Optional[bool] = None,
+    ) -> torch.Tensor:
+        """Forward pass for a single transformer block.
+
+        Args:
+            hidden_states: Input tensor [B, S, D] (BSHD) or [T, D] (THD).
+            attention_mask: Attention mask for BSHD format.
+            rotary_pos_emb: Precomputed rotary position embeddings.
+            cu_seqlens_q: Cumulative sequence lengths for queries (THD format).
+            cu_seqlens_kv: Cumulative sequence lengths for keys/values (THD format).
+            cu_seqlens_q_padded: Padded cumulative sequence lengths for queries.
+            cu_seqlens_kv_padded: Padded cumulative sequence lengths for keys/values.
+            max_seqlen_q: Maximum query sequence length (THD format).
+            max_seqlen_kv: Maximum key/value sequence length (THD format).
+            pad_between_seqs: Whether there is padding between sequences.
+
+        Returns:
+            Output tensor with same shape as input.
+        """
+        residual = hidden_states
+
+        # Pre-attention LayerNorm + QKV projection
+        qkv = self.layernorm_qkv(hidden_states)  # [*, 3*D]
+        q, k, v = qkv.chunk(3, dim=-1)  # each [*, D]
+
+        # Full d_model QK LayerNorm (matching reference model)
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        # Reshape to multi-head format: [B, S, H, d_head] or [T, H, d_head]
+        head_shape = (*q.shape[:-1], self.num_heads, self.head_dim)
+        q = q.view(head_shape)
+        k = k.view(head_shape)
+        v = v.view(head_shape)
+
+        # Apply RoPE
+        if rotary_pos_emb is not None:
+            tensor_format = "thd" if self.attn_input_format == "thd" else "bshd"
+            q = apply_rotary_pos_emb(
+                q,
+                rotary_pos_emb,
+                tensor_format=tensor_format,
+                cu_seqlens=cu_seqlens_q if tensor_format == "thd" else None,
+            )
+            k = apply_rotary_pos_emb(
+                k,
+                rotary_pos_emb,
+                tensor_format=tensor_format,
+                cu_seqlens=cu_seqlens_kv if tensor_format == "thd" else None,
+            )
+
+        # Attention
+        attn_output = self.core_attention(
+            q,
+            k,
+            v,
+            attention_mask=attention_mask,
+            cu_seqlens_q=cu_seqlens_q,
+            cu_seqlens_kv=cu_seqlens_kv,
+            cu_seqlens_q_padded=cu_seqlens_q_padded,
+            cu_seqlens_kv_padded=cu_seqlens_kv_padded,
+            max_seqlen_q=max_seqlen_q,
+            max_seqlen_kv=max_seqlen_kv,
+            pad_between_seqs=pad_between_seqs,
+        )  # [B, S, D] or [T, D] (DotProductAttention folds heads internally)
+
+        # Output projection
+        attn_output = self.proj(attn_output)
+
+        # Residual connection (residue scaling absorbed in proj weights)
+        hidden_states = residual + attn_output
+
+        # FFN with pre-LayerNorm and residual (residue scaling absorbed in fc2 weights)
+        residual = hidden_states
+        hidden_states = residual + self.layernorm_mlp(hidden_states)
+
+        return hidden_states
 
 
 class NVEsmcPreTrainedModel(PreTrainedModel):
@@ -108,7 +299,7 @@ class NVEsmcPreTrainedModel(PreTrainedModel):
 
     config_class = NVEsmcConfig
     base_model_prefix = "esmc"
-    _no_split_modules = ("TransformerLayer",)
+    _no_split_modules = ("EsmcTransformerBlock",)
     _tied_weights_keys: ClassVar[dict[str, str]] = {}
 
     def init_empty_weights(self):
@@ -155,55 +346,18 @@ class NVEsmcModel(NVEsmcPreTrainedModel):
         self.config = config
 
         self.embed_tokens = nn.Embedding(
-            config.vocab_size, config.hidden_size, config.pad_token_id, dtype=config.dtype
+            config.vocab_size, config.hidden_size, config.pad_token_id, dtype=config.torch_dtype
         )
-
-        def _init_method(x):
-            torch.nn.init.normal_(x, mean=0.0, std=config.initializer_range)
 
         self.layers = nn.ModuleList(
-            [
-                transformer_engine.pytorch.TransformerLayer(
-                    hidden_size=config.hidden_size,
-                    ffn_hidden_size=config.intermediate_size,
-                    num_attention_heads=config.num_attention_heads,
-                    bias=False,
-                    layernorm_epsilon=config.layer_norm_eps,
-                    hidden_dropout=0,
-                    attention_dropout=0,
-                    fuse_qkv_params=config.fuse_qkv_params,
-                    qkv_weight_interleaved=config.qkv_weight_interleaved,
-                    normalization="LayerNorm",
-                    activation="swiglu",
-                    attn_input_format=config.attn_input_format,
-                    self_attn_mask_type=config.self_attn_mask_type,
-                    num_gqa_groups=config.num_attention_heads,
-                    layer_number=layer_idx + 1,
-                    params_dtype=config.dtype,
-                    device="meta" if torch.get_default_device() == torch.device("meta") else "cuda",
-                    init_method=_init_method,
-                    output_layer_init_method=_init_method,
-                    qk_norm_type="LayerNorm",
-                    qk_norm_before_rope=True,
-                )
-                for layer_idx in range(config.num_hidden_layers)
-            ]
+            [EsmcTransformerBlock(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
 
-        # TE's _create_qk_norm_modules doesn't respect params_dtype, so QK norm
-        # weights default to float32. Cast them to match the model dtype to avoid
-        # Q/K vs V dtype mismatch during FP8 attention.
-        if config.dtype is not None:
-            for layer in self.layers:
-                for norm in (layer.self_attention.q_norm, layer.self_attention.k_norm):
-                    if norm is not None:
-                        norm.to(dtype=config.dtype)
-
-        # Final LayerNorm (no bias, matching reference model)
+        # Final LayerNorm (no bias in reference, but TE LayerNorm always has bias; set to zeros)
         self.norm = transformer_engine.pytorch.LayerNorm(
             config.hidden_size,
             eps=config.layer_norm_eps,
-            params_dtype=config.dtype,
+            params_dtype=config.torch_dtype,
             device="meta" if torch.get_default_device() == torch.device("meta") else "cuda",
         )
 
@@ -375,7 +529,7 @@ class NVEsmcLMHead(nn.Module):
                 config.hidden_size,
                 config.hidden_size,
                 bias=True,
-                params_dtype=config.dtype,
+                params_dtype=config.torch_dtype,
                 device="meta" if torch.get_default_device() == torch.device("meta") else "cuda",
                 init_method=lambda x: torch.nn.init.normal_(x, mean=0.0, std=config.initializer_range),
             )
@@ -385,7 +539,7 @@ class NVEsmcLMHead(nn.Module):
                 config.vocab_size,
                 bias=True,
                 eps=config.layer_norm_eps,
-                params_dtype=config.dtype,
+                params_dtype=config.torch_dtype,
                 device="meta" if torch.get_default_device() == torch.device("meta") else "cuda",
                 init_method=lambda x: torch.nn.init.normal_(x, mean=0.0, std=config.initializer_range),
             )

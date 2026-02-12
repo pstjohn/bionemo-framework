@@ -37,6 +37,7 @@ SOURCE_TO_DESTINATION_MAP: dict[str, list[str]] = {
     ],
     "bionemo-recipes/models/esm2/src/esm/collator.py": [
         "bionemo-recipes/models/llama3/collator.py",
+        "bionemo-recipes/models/esmc/collator.py",
         "bionemo-recipes/recipes/esm2_native_te/collator.py",
         "bionemo-recipes/recipes/llama3_native_te/collator.py",
     ],

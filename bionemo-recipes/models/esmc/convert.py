@@ -17,15 +17,16 @@
 
 The ESMC reference model uses:
 - QKV as a Sequential(LayerNorm, Linear) producing [Q||K||V] concatenated
-- QK LayerNorm over full d_model dimension (960)
+- QK LayerNorm over full d_model dimension (960), bias=False
 - Residue scaling: divides attn output and FFN output by sqrt(n_layers/36)
 - FFN as Sequential(LayerNorm, Linear, SwiGLU, Linear)
 
-TE TransformerLayer uses:
-- Fused LayerNormLinear for QKV with interleaved weights [h1_q, h1_k, h1_v, h2_q, ...]
-- Per-head QK LayerNorm (head_dim=64)
-- No native residue scaling (absorbed into projection weights)
-- Fused LayerNormMLP
+NVEsmc TE model uses:
+- LayerNormLinear for QKV with [Q||K||V] concatenated weights (no interleaving)
+- Full d_model QK LayerNorm via separate TE LayerNorm modules (exact match)
+- DotProductAttention for flash/fused attention
+- Residue scaling absorbed into output projection and fc2 weights
+- LayerNormMLP for fused FFN
 """
 
 import math
@@ -35,72 +36,13 @@ import torch
 from modeling_esmc_te import NVEsmcConfig, NVEsmcForMaskedLM
 
 
-# Direct 1:1 weight mappings (no transforms needed)
-mapping = {
-    "esmc.embed_tokens.weight": "esmc.embed_tokens.weight",
-    # Per-layer attention LayerNorm
-    "esmc.layers.*.self_attention.layernorm_qkv.layer_norm_weight": "esmc.layers.*.self_attention.layernorm_qkv.layer_norm_weight",
-    "esmc.layers.*.self_attention.layernorm_qkv.layer_norm_bias": "esmc.layers.*.self_attention.layernorm_qkv.layer_norm_bias",
-    # Per-layer MLP LayerNorm
-    "esmc.layers.*.layernorm_mlp.layer_norm_weight": "esmc.layers.*.layernorm_mlp.layer_norm_weight",
-    "esmc.layers.*.layernorm_mlp.layer_norm_bias": "esmc.layers.*.layernorm_mlp.layer_norm_bias",
-    # Per-layer QKV weight
-    "esmc.layers.*.self_attention.layernorm_qkv.weight": "esmc.layers.*.self_attention.layernorm_qkv.weight",
-    # Per-layer attention output projection
-    "esmc.layers.*.self_attention.proj.weight": "esmc.layers.*.self_attention.proj.weight",
-    # Per-layer MLP weights
-    "esmc.layers.*.layernorm_mlp.fc1_weight": "esmc.layers.*.layernorm_mlp.fc1_weight",
-    "esmc.layers.*.layernorm_mlp.fc2_weight": "esmc.layers.*.layernorm_mlp.fc2_weight",
-    # Per-layer QK norm
-    "esmc.layers.*.self_attention.q_norm.weight": "esmc.layers.*.self_attention.q_norm.weight",
-    "esmc.layers.*.self_attention.q_norm.bias": "esmc.layers.*.self_attention.q_norm.bias",
-    "esmc.layers.*.self_attention.k_norm.weight": "esmc.layers.*.self_attention.k_norm.weight",
-    "esmc.layers.*.self_attention.k_norm.bias": "esmc.layers.*.self_attention.k_norm.bias",
-    # Final norm
-    "esmc.norm.weight": "esmc.norm.weight",
-    "esmc.norm.bias": "esmc.norm.bias",
-    # Sequence head
-    "sequence_head.dense.weight": "sequence_head.dense.weight",
-    "sequence_head.dense.bias": "sequence_head.dense.bias",
-    "sequence_head.decoder.layer_norm_weight": "sequence_head.decoder.layer_norm_weight",
-    "sequence_head.decoder.layer_norm_bias": "sequence_head.decoder.layer_norm_bias",
-    "sequence_head.decoder.weight": "sequence_head.decoder.weight",
-    "sequence_head.decoder.bias": "sequence_head.decoder.bias",
-}
-
-
-def _reinterleave_qkv(weight, num_heads, head_dim):
-    """Reinterleave QKV weight from [Q||K||V] to TE's interleaved format.
-
-    Input:  [3*num_heads*head_dim, hidden_size] arranged as [Q, K, V]
-    Output: [3*num_heads*head_dim, hidden_size] arranged as [h1_q, h1_k, h1_v, h2_q, ...]
-    """
-    # Reshape to [3, num_heads, head_dim, hidden_size]
-    qkv = weight.reshape(3, num_heads, head_dim, -1)
-    # Transpose to [num_heads, 3, head_dim, hidden_size]
-    qkv = qkv.permute(1, 0, 2, 3)
-    # Flatten back to [3*num_heads*head_dim, hidden_size]
-    return qkv.reshape(-1, weight.shape[-1])
-
-
-def _deinterleave_qkv(weight, num_heads, head_dim):
-    """Reverse of _reinterleave_qkv: from TE interleaved to [Q||K||V] concatenated."""
-    # Reshape to [num_heads, 3, head_dim, hidden_size]
-    qkv = weight.reshape(num_heads, 3, head_dim, -1)
-    # Transpose to [3, num_heads, head_dim, hidden_size]
-    qkv = qkv.permute(1, 0, 2, 3)
-    # Flatten back to [3*num_heads*head_dim, hidden_size]
-    return qkv.reshape(-1, weight.shape[-1])
-
-
 def convert_esmc_to_te(ref_state_dict: dict[str, torch.Tensor], config: NVEsmcConfig) -> NVEsmcForMaskedLM:
     """Convert EvolutionaryScale ESMC weights to NVEsmc (TransformerEngine) format.
 
     This performs:
     1. Key remapping from ESMC ref format to TE format
-    2. QKV weight reinterleaving for TE's fused attention
-    3. QK norm weight reshaping from [d_model] to per-head [head_dim]
-    4. Residue scaling absorption into output projection and fc2 weights
+    2. QK norm weight direct copy (both use full d_model LayerNorm)
+    3. Residue scaling absorption into output projection and fc2 weights
 
     Args:
         ref_state_dict: State dict from the EvolutionaryScale ESMC model (.pth file).
@@ -109,8 +51,6 @@ def convert_esmc_to_te(ref_state_dict: dict[str, torch.Tensor], config: NVEsmcCo
     Returns:
         NVEsmcForMaskedLM with converted weights.
     """
-    num_heads = config.num_attention_heads
-    head_dim = config.hidden_size // num_heads
     num_layers = config.num_hidden_layers
     hidden_size = config.hidden_size
     scale_factor = math.sqrt(num_layers / 36)
@@ -125,33 +65,32 @@ def convert_esmc_to_te(ref_state_dict: dict[str, torch.Tensor], config: NVEsmcCo
         te_prefix = f"esmc.layers.{layer_idx}"
 
         # Attention LayerNorm (pre-QKV)
-        te_state_dict[f"{te_prefix}.self_attention.layernorm_qkv.layer_norm_weight"] = ref_state_dict[
+        te_state_dict[f"{te_prefix}.layernorm_qkv.layer_norm_weight"] = ref_state_dict[
             f"{ref_prefix}.attn.layernorm_qkv.0.weight"
         ]
-        te_state_dict[f"{te_prefix}.self_attention.layernorm_qkv.layer_norm_bias"] = ref_state_dict[
+        te_state_dict[f"{te_prefix}.layernorm_qkv.layer_norm_bias"] = ref_state_dict[
             f"{ref_prefix}.attn.layernorm_qkv.0.bias"
         ]
 
-        # QKV weight: reinterleave from [Q||K||V] to TE's interleaved format
-        qkv_weight = ref_state_dict[f"{ref_prefix}.attn.layernorm_qkv.1.weight"]
-        te_state_dict[f"{te_prefix}.self_attention.layernorm_qkv.weight"] = _reinterleave_qkv(
-            qkv_weight, num_heads, head_dim
-        )
+        # QKV weight: direct copy (stored as [Q||K||V] concatenated, no interleaving)
+        te_state_dict[f"{te_prefix}.layernorm_qkv.weight"] = ref_state_dict[
+            f"{ref_prefix}.attn.layernorm_qkv.1.weight"
+        ]
 
-        # QK norm: reshape from full d_model [960] to per-head [64]
-        # ESMC applies LayerNorm(d_model) before reshape to heads.
-        # TE applies per-head LayerNorm(head_dim). We take each head's portion.
-        q_ln_weight = ref_state_dict[f"{ref_prefix}.attn.q_ln.weight"]
-        k_ln_weight = ref_state_dict[f"{ref_prefix}.attn.k_ln.weight"]
-        # Take the first head's portion as representative (all heads share same init)
-        te_state_dict[f"{te_prefix}.self_attention.q_norm.weight"] = q_ln_weight[:head_dim]
-        te_state_dict[f"{te_prefix}.self_attention.q_norm.bias"] = torch.zeros(head_dim, dtype=q_ln_weight.dtype)
-        te_state_dict[f"{te_prefix}.self_attention.k_norm.weight"] = k_ln_weight[:head_dim]
-        te_state_dict[f"{te_prefix}.self_attention.k_norm.bias"] = torch.zeros(head_dim, dtype=k_ln_weight.dtype)
+        # QK norm: direct copy (both use full d_model LayerNorm)
+        # Reference has bias=False, TE LayerNorm always has bias -> set to zeros
+        te_state_dict[f"{te_prefix}.q_norm.weight"] = ref_state_dict[f"{ref_prefix}.attn.q_ln.weight"]
+        te_state_dict[f"{te_prefix}.q_norm.bias"] = torch.zeros(
+            hidden_size, dtype=ref_state_dict[f"{ref_prefix}.attn.q_ln.weight"].dtype
+        )
+        te_state_dict[f"{te_prefix}.k_norm.weight"] = ref_state_dict[f"{ref_prefix}.attn.k_ln.weight"]
+        te_state_dict[f"{te_prefix}.k_norm.bias"] = torch.zeros(
+            hidden_size, dtype=ref_state_dict[f"{ref_prefix}.attn.k_ln.weight"].dtype
+        )
 
         # Attention output projection: absorb residue scaling
         out_proj_weight = ref_state_dict[f"{ref_prefix}.attn.out_proj.weight"]
-        te_state_dict[f"{te_prefix}.self_attention.proj.weight"] = out_proj_weight / scale_factor
+        te_state_dict[f"{te_prefix}.proj.weight"] = out_proj_weight / scale_factor
 
         # FFN LayerNorm (pre-MLP)
         te_state_dict[f"{te_prefix}.layernorm_mlp.layer_norm_weight"] = ref_state_dict[f"{ref_prefix}.ffn.0.weight"]
@@ -204,9 +143,8 @@ def convert_esmc_te_to_ref(model_te: NVEsmcForMaskedLM) -> dict[str, torch.Tenso
     """Convert NVEsmc (TransformerEngine) weights back to EvolutionaryScale ESMC format.
 
     This reverses the transformations from convert_esmc_to_te:
-    1. QKV weight deinterleaving
-    2. QK norm weight expansion from per-head [head_dim] to [d_model]
-    3. Residue scaling removal from projection weights
+    1. QK norm weight direct copy (both use full d_model)
+    2. Residue scaling removal from projection weights
 
     Args:
         model_te: NVEsmcForMaskedLM model with TE weights.
@@ -215,8 +153,6 @@ def convert_esmc_te_to_ref(model_te: NVEsmcForMaskedLM) -> dict[str, torch.Tenso
         State dict in EvolutionaryScale ESMC format.
     """
     config = model_te.config
-    num_heads = config.num_attention_heads
-    head_dim = config.hidden_size // num_heads
     num_layers = config.num_hidden_layers
     scale_factor = math.sqrt(num_layers / 36)
 
@@ -232,28 +168,19 @@ def convert_esmc_te_to_ref(model_te: NVEsmcForMaskedLM) -> dict[str, torch.Tenso
 
         # Attention LayerNorm
         ref_state_dict[f"{ref_prefix}.attn.layernorm_qkv.0.weight"] = te_sd[
-            f"{te_prefix}.self_attention.layernorm_qkv.layer_norm_weight"
+            f"{te_prefix}.layernorm_qkv.layer_norm_weight"
         ]
-        ref_state_dict[f"{ref_prefix}.attn.layernorm_qkv.0.bias"] = te_sd[
-            f"{te_prefix}.self_attention.layernorm_qkv.layer_norm_bias"
-        ]
+        ref_state_dict[f"{ref_prefix}.attn.layernorm_qkv.0.bias"] = te_sd[f"{te_prefix}.layernorm_qkv.layer_norm_bias"]
 
-        # QKV weight: deinterleave
-        qkv_weight = te_sd[f"{te_prefix}.self_attention.layernorm_qkv.weight"]
-        ref_state_dict[f"{ref_prefix}.attn.layernorm_qkv.1.weight"] = _deinterleave_qkv(
-            qkv_weight, num_heads, head_dim
-        )
+        # QKV weight: direct copy (no deinterleaving needed)
+        ref_state_dict[f"{ref_prefix}.attn.layernorm_qkv.1.weight"] = te_sd[f"{te_prefix}.layernorm_qkv.weight"]
 
-        # QK norm: expand from per-head [64] to full d_model [960]
-        q_norm_weight = te_sd[f"{te_prefix}.self_attention.q_norm.weight"]
-        k_norm_weight = te_sd[f"{te_prefix}.self_attention.k_norm.weight"]
-        ref_state_dict[f"{ref_prefix}.attn.q_ln.weight"] = q_norm_weight.repeat(num_heads)
-        ref_state_dict[f"{ref_prefix}.attn.k_ln.weight"] = k_norm_weight.repeat(num_heads)
+        # QK norm: direct copy (both use full d_model LayerNorm)
+        ref_state_dict[f"{ref_prefix}.attn.q_ln.weight"] = te_sd[f"{te_prefix}.q_norm.weight"]
+        ref_state_dict[f"{ref_prefix}.attn.k_ln.weight"] = te_sd[f"{te_prefix}.k_norm.weight"]
 
         # Attention output projection: reverse scaling
-        ref_state_dict[f"{ref_prefix}.attn.out_proj.weight"] = (
-            te_sd[f"{te_prefix}.self_attention.proj.weight"] * scale_factor
-        )
+        ref_state_dict[f"{ref_prefix}.attn.out_proj.weight"] = te_sd[f"{te_prefix}.proj.weight"] * scale_factor
 
         # FFN LayerNorm
         ref_state_dict[f"{ref_prefix}.ffn.0.weight"] = te_sd[f"{te_prefix}.layernorm_mlp.layer_norm_weight"]

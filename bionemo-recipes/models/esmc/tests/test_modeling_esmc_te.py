@@ -27,14 +27,17 @@ import gc
 from pathlib import Path
 from typing import Callable, Dict, List, Literal, Type
 
-import pytest
 import torch
 from torch import nn
-from transformers import PretrainedConfig, PreTrainedModel, PreTrainedTokenizer
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling, PretrainedConfig, PreTrainedModel
 
+from collator import DataCollatorWithFlattening
 from convert import convert_esmc_te_to_ref, convert_esmc_to_te
 from modeling_esmc_te import NVEsmcConfig, NVEsmcForMaskedLM
 from tests.common import BaseModelTest, TestTolerances
+
+
+TOKENIZER_DIR = str(Path(__file__).resolve().parent.parent / "esmc_fast_tokenizer")
 
 
 class TestEsmcModel(BaseModelTest):
@@ -60,10 +63,8 @@ class TestEsmcModel(BaseModelTest):
         # ESMC doesn't have a standard HF model class; we skip HF-specific tests.
         return PreTrainedModel  # Placeholder, not used directly
 
-    def get_tokenizer(self) -> PreTrainedTokenizer:
-        from esm.tokenization import EsmSequenceTokenizer
-
-        return EsmSequenceTokenizer()
+    def get_tokenizer(self):
+        return AutoTokenizer.from_pretrained(TOKENIZER_DIR)
 
     def get_layer_path(self, model: PreTrainedModel) -> List[nn.Module]:
         return list(model.esmc.layers)
@@ -71,6 +72,11 @@ class TestEsmcModel(BaseModelTest):
     def create_test_config(self, **kwargs) -> PretrainedConfig:
         """Create test config for ESMC - use full architecture params but limit layers for speed."""
         num_hidden_layers = kwargs.pop("num_hidden_layers", 2)
+        # Shim: the base test class passes `dtype=` which works on transformers v5, but the esm
+        # package pins transformers<4.53 where PretrainedConfig only accepts `torch_dtype=`.
+        # This can be dropped when esm updates its transformers version constraint.
+        if "dtype" in kwargs:
+            kwargs["torch_dtype"] = kwargs.pop("dtype")
         return NVEsmcConfig(
             vocab_size=64,
             hidden_size=960,
@@ -95,74 +101,26 @@ class TestEsmcModel(BaseModelTest):
             "MFKVYGYDSNIHKCV",
         ]
 
-        # Tokenize (pad_to_multiple_of ensures FP8-compatible dimensions in BSHD)
-        tokenizer_kwargs = {"return_tensors": "pt", "padding": True}
-        if pad_to_multiple_of is not None:
-            tokenizer_kwargs["pad_to_multiple_of"] = pad_to_multiple_of
-        encodings = tokenizer(sequences, **tokenizer_kwargs)
-        input_ids = encodings["input_ids"].to("cuda")
-        attention_mask = encodings["attention_mask"].to("cuda")
+        # Tokenize
+        tokenized = [tokenizer(seq) for seq in sequences]
 
-        # Create labels: use input_ids as labels (masked LM style)
-        labels = input_ids.clone()
-        # Mask padding positions in labels
-        labels[attention_mask == 0] = -100
+        # Use data collator for MLM
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer,
+            mlm=False,
+            pad_to_multiple_of=pad_to_multiple_of if format == "bshd" else None,
+        )
 
         if format == "thd":
-            # Pack into THD format: remove padding, create cu_seqlens
-            seq_lengths = attention_mask.sum(dim=1).to(torch.int32)
-            cu_seqlens = torch.nn.functional.pad(torch.cumsum(seq_lengths, dim=0, dtype=torch.int32), (1, 0))
-            max_seqlen = seq_lengths.max().item()
+            data_collator = DataCollatorWithFlattening(
+                collator=data_collator,
+                pad_sequences_to_be_divisible_by=pad_to_multiple_of,
+            )
 
-            # Extract non-padding tokens
-            mask_bool = attention_mask.bool()
-            packed_ids = input_ids[mask_bool].unsqueeze(0)  # [1, total_tokens]
-            packed_labels = labels[mask_bool].unsqueeze(0)
+        batch = data_collator(tokenized)
 
-            result = {
-                "input_ids": packed_ids,
-                "labels": packed_labels,
-                "cu_seq_lens_q": cu_seqlens,
-                "cu_seq_lens_k": cu_seqlens,
-                "max_length_q": max_seqlen,
-                "max_length_k": max_seqlen,
-            }
-
-            if pad_to_multiple_of is not None:
-                # Add padding between sequences for padded THD
-                padded_lengths = ((seq_lengths + pad_to_multiple_of - 1) // pad_to_multiple_of) * pad_to_multiple_of
-                cu_seqlens_padded = torch.nn.functional.pad(
-                    torch.cumsum(padded_lengths, dim=0, dtype=torch.int32), (1, 0)
-                )
-                total_padded = cu_seqlens_padded[-1].item()
-                padded_ids = torch.full((1, total_padded), tokenizer.pad_token_id, dtype=torch.long, device="cuda")
-                padded_labels = torch.full((1, total_padded), -100, dtype=torch.long, device="cuda")
-
-                offset = 0
-                for i, slen in enumerate(seq_lengths):
-                    padded_ids[0, offset : offset + slen] = packed_ids[0, cu_seqlens[i] : cu_seqlens[i + 1]]
-                    padded_labels[0, offset : offset + slen] = packed_labels[0, cu_seqlens[i] : cu_seqlens[i + 1]]
-                    offset += padded_lengths[i]
-
-                result = {
-                    "input_ids": padded_ids,
-                    "labels": padded_labels,
-                    "cu_seq_lens_q": cu_seqlens,
-                    "cu_seq_lens_k": cu_seqlens,
-                    "cu_seq_lens_q_padded": cu_seqlens_padded,
-                    "cu_seq_lens_kv_padded": cu_seqlens_padded,
-                    "max_length_q": padded_lengths.max().item(),
-                    "max_length_k": padded_lengths.max().item(),
-                    "pad_between_seqs": True,
-                }
-
-            return {k: v.to("cuda") if isinstance(v, torch.Tensor) else v for k, v in result.items()}
-
-        return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "labels": labels,
-        }
+        # Move to device
+        return {k: v.to("cuda") if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
     def get_hf_to_te_converter(self) -> Callable:
         """Return the ESMC ref -> TE conversion function.
@@ -192,18 +150,14 @@ class TestEsmcModel(BaseModelTest):
     def get_tolerances(self) -> TestTolerances:
         """Return ESMC-specific tolerances.
 
-        QK norm approximation (full d_model=960 vs per-head dim=64) introduces significant
-        numerical divergence that accumulates over 30 layers. The ESMC reference model normalizes
-        Q/K across the full hidden dimension, while TE normalizes each head independently.
-        These are mathematically different operations, so exact match is not expected.
+        With full d_model QK LayerNorm (matching the reference model exactly), the TE model
+        closely reproduces reference outputs. These tolerances are comparable to LLaMA3.
         """
         return TestTolerances(
-            golden_value_loss_atol=2.0,
-            golden_value_loss_rtol=0.5,
-            golden_value_logits_atol=25.0,
-            golden_value_logits_rtol=1.0,
-            golden_value_hidden_states_atol=10.0,
-            golden_value_hidden_states_rtol=1.0,
+            golden_value_loss_atol=5e-3,
+            golden_value_loss_rtol=0.01,
+            golden_value_logits_atol=1.5,
+            golden_value_logits_rtol=0.01,
         )
 
     # ==================== Override methods for non-HF reference model ====================
@@ -251,7 +205,7 @@ class TestEsmcModel(BaseModelTest):
             num_hidden_layers=30,
             num_attention_heads=15,
             intermediate_size=2560,
-            dtype="bfloat16",
+            torch_dtype="bfloat16",
         )
 
         model_te = convert_esmc_to_te(ref_state_dict, config)
@@ -264,6 +218,17 @@ class TestEsmcModel(BaseModelTest):
         gc.collect()
 
         return checkpoint_path
+
+    def get_converted_te_model(self, **kwargs) -> PreTrainedModel:
+        """Get the converted TE model.
+
+        Shim: the base class passes `dtype=` which works on transformers v5, but the esm
+        package pins transformers<4.53 where `from_pretrained` only accepts `torch_dtype=`.
+        This can be dropped when esm updates its transformers version constraint.
+        """
+        if "dtype" in kwargs:
+            kwargs["torch_dtype"] = kwargs.pop("dtype")
+        return super().get_converted_te_model(**kwargs)
 
     # ==================== Override tests that don't apply to ESMC ====================
 
@@ -289,7 +254,9 @@ class TestEsmcModel(BaseModelTest):
     def test_convert_te_to_hf_roundtrip(self):
         """Test roundtrip conversion ESMC ref -> TE -> ESMC ref.
 
-        Due to QK norm approximation (full d_model vs per-head), we use relaxed tolerances.
+        With full d_model QK LayerNorm, all weights should roundtrip exactly.
+        The only non-exact weights are output projection and fc2 (due to residue
+        scaling absorption/removal via float division/multiplication).
         """
         model_ref = self.get_reference_model_no_weights()
         original_state_dict = {k: v.clone() for k, v in model_ref.state_dict().items()}
@@ -301,25 +268,20 @@ class TestEsmcModel(BaseModelTest):
         # Reverse: TE -> ref
         converted_state_dict = convert_esmc_te_to_ref(model_te)
 
-        # Compare - most weights should roundtrip exactly
+        # Compare - all weights should roundtrip with high precision
         for key in original_state_dict:
             if key not in converted_state_dict:
                 continue
             original = original_state_dict[key]
             converted = converted_state_dict[key]
 
-            if "q_ln" in key or "k_ln" in key:
-                # QK norm weights are approximated (full d_model -> per-head -> repeat)
-                # so they won't match exactly
-                torch.testing.assert_close(original, converted, atol=1e-5, rtol=1e-5)
-            else:
-                torch.testing.assert_close(
-                    original.float(),
-                    converted.float(),
-                    atol=1e-5,
-                    rtol=1e-5,
-                    msg=f"Roundtrip mismatch for {key}",
-                )
+            torch.testing.assert_close(
+                original.float(),
+                converted.float(),
+                atol=1e-5,
+                rtol=1e-5,
+                msg=f"Roundtrip mismatch for {key}",
+            )
 
     def test_convert_config(self):
         """Test that ESMC config can be created properly."""
@@ -335,12 +297,10 @@ class TestEsmcModel(BaseModelTest):
         assert config.num_attention_heads == 15
 
     def test_golden_values(self):
-        """Test that TE model produces valid outputs compared to ESMC reference model.
+        """Test that TE model produces matching outputs compared to ESMC reference model.
 
-        Note: Due to QK norm approximation (full d_model=960 vs per-head dim=64),
-        exact numerical match is NOT expected. The ESMC reference model normalizes Q/K
-        across the full hidden dimension while TE normalizes each head independently.
-        This test verifies that the conversion produces finite, reasonable outputs.
+        Overrides the base class because the ESMC ref model has a non-HF API:
+        it takes (sequence_tokens, sequence_id) and returns .sequence_logits.
         """
         tokenizer = self.get_tokenizer()
         sequences = ["MKTVRQERLKSIVRILERSKEPV", "KALTARQQEVFDLIRDHISQTGMPPTRA"]
@@ -378,53 +338,11 @@ class TestEsmcModel(BaseModelTest):
         assert torch.isfinite(te_output.loss), "TE model produced non-finite loss"
         assert torch.isfinite(ref_logits[mask]).all(), "Reference model produced non-finite logits"
 
-        # Compare logits with relaxed tolerances (QK norm approximation)
+        # Compare logits
         tolerances = self.get_tolerances()
         torch.testing.assert_close(
             te_output.logits[mask],
             ref_logits[mask],
             atol=tolerances.golden_value_logits_atol,
             rtol=tolerances.golden_value_logits_rtol,
-            msg=lambda x: f"ESMC golden value logits mismatch (expected due to QK norm): {x}",
-        )
-
-    def test_golden_values_thd(self, te_attn_backend):
-        """Skip THD golden value test - ESMC is encoder-only and THD/BSHD should match for non-MoE."""
-        if te_attn_backend == "fused_attn" and torch.cuda.get_device_capability()[0] == 8:
-            pytest.xfail("On Ada and Ampere, no THD implementation is available for fused attn.")
-        elif te_attn_backend == "fused_attn" and torch.cuda.get_device_capability()[0] == 12:
-            pytest.xfail("BIONEMO-2840: On sm120, the THD implementation is not available for fused attn.")
-
-        input_data_bshd = self.get_test_input_data(format="bshd")
-        input_data_thd = self.get_test_input_data(format="thd")
-        tolerances = self.get_tolerances()
-
-        # Run models sequentially to manage GPU memory
-        model_bshd = self.get_converted_te_model(attn_input_format="bshd", dtype=torch.bfloat16)
-        model_bshd.eval()
-        with torch.inference_mode():
-            outputs_bshd = model_bshd(**input_data_bshd)
-        bshd_loss = outputs_bshd.loss.detach().clone()
-        bshd_logits = outputs_bshd.logits[input_data_bshd["attention_mask"].to(bool)].detach().clone()
-        del model_bshd, outputs_bshd
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        model_thd = self.get_converted_te_model(attn_input_format="thd", dtype=torch.bfloat16)
-        model_thd.eval()
-        with torch.inference_mode():
-            outputs_thd = model_thd(**input_data_thd)
-
-        torch.testing.assert_close(
-            bshd_logits,
-            outputs_thd.logits,
-            atol=tolerances.golden_value_logits_atol,
-            rtol=tolerances.golden_value_logits_rtol,
-        )
-
-        torch.testing.assert_close(
-            bshd_loss,
-            outputs_thd.loss,
-            atol=tolerances.golden_value_loss_atol,
-            rtol=tolerances.golden_value_loss_rtol,
         )
