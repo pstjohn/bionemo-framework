@@ -66,7 +66,7 @@ def export_esmc_checkpoint(export_path: Path):
         json.dump(config_json, f, indent=2, sort_keys=True)
 
     # Copy modeling file for standalone loading
-    shutil.copy("modeling_esmc_te.py", export_path / "modeling_esmc_te.py")
+    shutil.copy(Path(__file__).parent / "modeling_esmc_te.py", export_path / "modeling_esmc_te.py")
 
     # Save tokenizer
     from esm.tokenization import EsmSequenceTokenizer
