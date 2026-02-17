@@ -71,11 +71,12 @@ Training was performed with BF16 precision.
 
 ### Distributed Training
 
-This recipe supports distributed training using DDP, FSDP2, and FSDP2 with Context Parallelism, shown in three separate training entrypoints:
+This recipe supports distributed training using DDP, FSDP2, FSDP2 with Context Parallelism, and Megatron-FSDP with Context Parallelism, shown in four separate training entrypoints:
 
 - [Distributed Data Parallel (DDP)](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html), shown in `train_ddp.py`
 - [Fully Sharded Data Parallel 2 (FSDP2)](https://docs.pytorch.org/docs/stable/distributed.fsdp.fully_shard.html), shown in `train_fsdp2.py`
 - FSDP2 with Context Parallelism, shown in `train_fsdp2_cp.py`
+- Megatron-FSDP with Context Parallelism, shown in `train_mfsdp_cp.py`
 
 ## Commands to Launch Training
 
@@ -167,6 +168,20 @@ parallelism ranks. Works with both BSHD (no padding) and THD (padding) input for
 
 ```bash
 torchrun --nproc_per_node=4 train_fsdp2_cp.py --config-name L0_sanity_cp cp_size=2
+```
+
+### Megatron-FSDP with Context Parallelism
+
+Megatron-FSDP (`train_mfsdp_cp.py`) provides an alternative FSDP implementation from the `megatron-fsdp` package with
+context parallelism support. It creates a 3D device mesh `(dp, cp, tp)` where `tp` is a dummy dimension of size 1. Only
+TE models are supported. Note that `torch.compile` is not supported with Megatron-FSDP.
+
+```bash
+# Single GPU (cp_size=1)
+python train_mfsdp_cp.py --config-name L0_sanity_cp cp_size=1
+
+# Multi-GPU with context parallelism
+torchrun --nproc_per_node=4 train_mfsdp_cp.py --config-name L0_sanity_cp cp_size=2
 ```
 
 ## Downloading Pre-Training Data For Offline Training
