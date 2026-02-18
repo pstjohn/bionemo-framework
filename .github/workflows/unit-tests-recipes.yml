@@ -160,7 +160,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /cache/huggingface
-          key: ${{ runner.os }}-huggingface-${{ matrix.recipe.name }}
+          key: ${{ runner.os }}-huggingface-${{ matrix.recipe.name }}-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-huggingface-${{ matrix.recipe.name }}-
             ${{ runner.os }}-huggingface-
