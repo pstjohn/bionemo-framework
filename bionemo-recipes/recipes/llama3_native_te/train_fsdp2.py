@@ -13,6 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Fully Sharded Data Parallel v2 (FSDP2) training script for Llama 3 with TransformerEngine.
+
+Model weights and optimizer states are sharded across GPUs, allowing training of models that exceed
+the memory of a single GPU. Supports both TE-accelerated (NVLlamaForCausalLM) and standard
+HuggingFace (LlamaForCausalLM) models.
+
+For very long sequences, use ``train_fsdp2_cp.py`` which adds Context Parallelism on top of FSDP2.
+"""
+
 import gc
 import logging
 from contextlib import nullcontext
@@ -57,7 +66,7 @@ def main(args: DictConfig) -> float | None:
     Returns:
         float: The loss value for the final batch.
     """
-    # Initialize the distributed configuration, including creating the distributed process group.
+    # --- Distributed Setup ---
     dist_config = DistributedConfig()
     logger.info("Initializing distributed training: %s", dist_config)
     device = torch.device(f"cuda:{dist_config.local_rank}")
@@ -68,10 +77,9 @@ def main(args: DictConfig) -> float | None:
     if args.fp8_stats_config.enabled:
         initialize_fp8_debugging(dist_config, **args.fp8_stats_config, fp8_enabled=args.fp8_config.enabled)
 
-    # Create a device mesh for FSDP.
     device_mesh = init_device_mesh("cuda", mesh_shape=(dist_config.world_size,), mesh_dim_names=("dp",))
 
-    # Create an FP8 recipe -- this is only used if FP8 is enabled in the config.
+    # --- Model Configuration ---
     fp8_recipe = hydra.utils.get_class(args.fp8_config.fp8_recipe)(
         fp8_format=Format[args.fp8_config.fp8_format], **args.fp8_config.fp8_recipe_kwargs
     )
@@ -83,12 +91,12 @@ def main(args: DictConfig) -> float | None:
         config_class = LlamaConfig
         model_class = LlamaForCausalLM
 
-    # Create an empty Llama3 model with a causal language model head, e.g. "meta-llama/Meta-Llama-3-8B".
+    # --- Model Initialization ---
     config = config_class.from_pretrained(args.config_name_or_path, dtype=torch.bfloat16, **args.config_kwargs)
 
     # Optionally use transformer engine to initialize only fp8 versions of weights by setting
-    # `fp8_config.quantized_model_init_kwargs.enabled` to `True`, as opposed to using the default where both bfloat16 and fp8
-    # versions of weights are kept.
+    # `fp8_config.quantized_model_init_kwargs.enabled` to `True`, as opposed to using the default where both bfloat16
+    # and fp8 versions of weights are kept.
     with (
         torch.device("meta") if args.use_meta_device else nullcontext(),
         transformer_engine.pytorch.quantized_model_init(
@@ -99,7 +107,7 @@ def main(args: DictConfig) -> float | None:
 
     logger.info("Initialized Model:\n%s", model)
 
-    # Shard the transformer layers with FSDP. For Llama3, the transformer stack is in model.model.layers.
+    # --- Distributed Wrapping (FSDP2) ---
     # Each decoder layer should be individually sharded before sharding the full model.
     for layer in model.model.layers:
         fully_shard(layer, mesh=device_mesh["dp"])
@@ -118,23 +126,25 @@ def main(args: DictConfig) -> float | None:
     if args.fp8_stats_config.enabled:
         debug_api.infer_and_assign_layer_names(model)
 
-    # Create optimizer. Convert OmegaConf to regular dict to avoid serialization issues (BIONEMO-2873).
+    # --- Optimizer & Scheduler ---
+    # Convert OmegaConf to regular dict to avoid serialization issues (BIONEMO-2873).
     optimizer = AdamW(model.parameters(), **OmegaConf.to_container(args.adamw_kwargs, resolve=True))  # type: ignore
     scheduler = get_cosine_annealing_schedule_with_warmup(optimizer, **args.lr_scheduler_kwargs)
-
-    if args.use_sequence_packing:
-        train_dataloader, dataset_or_sampler = create_thd_dataloader(dist_config, **args.dataset)
-    else:
-        train_dataloader, dataset_or_sampler = create_bshd_dataloader(dist_config, **args.dataset)
 
     if args.use_torch_compile:
         # If we're using torch.compile, we need to do this before loading the checkpoint to ensure key consistency.
         model = torch.compile(model)
 
-    # If we're resuming from a checkpoint, load it and set the start step. Otherwise, start from step 0.
+    # --- Data Loading ---
+    if args.use_sequence_packing:
+        train_dataloader, dataset_or_sampler = create_thd_dataloader(dist_config, **args.dataset)
+    else:
+        train_dataloader, dataset_or_sampler = create_bshd_dataloader(dist_config, **args.dataset)
+
+    # --- Checkpoint Resume ---
     ckpt_path = Path(args.checkpoint.ckpt_dir) / "train_fsdp2" if args.checkpoint.ckpt_dir else None
     if args.checkpoint.resume_from_checkpoint and ckpt_path:
-        logger.info(f"Attempting to load checkpoint from {ckpt_path}")
+        logger.info("Attempting to load checkpoint from %s", ckpt_path)
         model, optimizer, scheduler, train_dataloader, start_step, epoch = load_checkpoint_fsdp2(
             model=model,
             optimizer=optimizer,
@@ -144,7 +154,7 @@ def main(args: DictConfig) -> float | None:
             dataloader=train_dataloader,
             process_group=device_mesh.get_group("dp"),
         )
-        logger.info(f"Checkpoint loaded, resuming from step {start_step}, epoch {epoch}")
+        logger.info("Checkpoint loaded, resuming from step %s, epoch %s", start_step, epoch)
     else:
         logger.info("No checkpoint to load, starting from scratch")
         start_step = 0
@@ -155,8 +165,8 @@ def main(args: DictConfig) -> float | None:
     gc.collect()
     torch.cuda.empty_cache()
 
-    # Training loop
-    logger.info(f"Starting training loop from step {start_step} to {args.num_train_steps}")
+    # --- Training Loop ---
+    logger.info("Starting training loop from step %s to %s", start_step, args.num_train_steps)
     step = start_step
     micro_step = 0  # Gradient accumulation step counter
     while step < args.num_train_steps:
@@ -176,7 +186,7 @@ def main(args: DictConfig) -> float | None:
             # Log microbatch step data for accumulation metrics
             perf_logger.log_micro_step(step=step, batch=batch, outputs=outputs)
 
-            # Gradient accumulation - only step optimizer after accumulating gradients
+            # The end of a "full" step (i.e. after possibly multiple gradient accumulation steps).
             if micro_step % args.grad_acc_steps == 0:
                 micro_step = 0
 
@@ -217,7 +227,7 @@ def main(args: DictConfig) -> float | None:
         epoch += 1
         dataset_or_sampler.set_epoch(epoch)
 
-    # Save final model to a .safetensors file.
+    # --- Cleanup ---
     if args.checkpoint.save_final_model and ckpt_path:
         save_final_model_fsdp2(
             model=model,
@@ -229,7 +239,6 @@ def main(args: DictConfig) -> float | None:
     if args.checkpoint.async_save and "fsdp2" in _ckpt_futures and _ckpt_futures["fsdp2"] is not None:
         _ckpt_futures["fsdp2"].result()
 
-    # Clean up distributed training
     perf_logger.finish()
     torch.distributed.destroy_process_group()
 

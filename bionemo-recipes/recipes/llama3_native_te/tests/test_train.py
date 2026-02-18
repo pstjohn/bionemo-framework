@@ -420,7 +420,7 @@ def test_train_fsdp2_fp8_thd(tmp_path, recipe_path):
 
 @requires_datacenter_hardware
 def test_sanity_fsdp2_cp(tmp_path, recipe_path):
-    # Run the training script with Hydra configuration overrides
+    """Test FSDP2 with context parallelism training on a single GPU (cp_size=1)."""
     with initialize_config_dir(config_dir=str(recipe_path / "hydra_config"), version_base="1.2"):
         sanity_config = compose(
             config_name="L0_sanity_cp",
