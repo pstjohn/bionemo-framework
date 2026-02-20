@@ -339,7 +339,8 @@ class NVMixtralModel(NVMixtralPreTrainedModel):
             hidden_states = hidden_states.squeeze(0)
 
         if self.config.attn_input_format == "bshd" and attention_mask is not None and attention_mask.dim() == 2:
-            attention_mask = attention_mask[:, None, None, :] < -1
+            # Convert HF mask (1=attend, 0=pad) to TE boolean mask (True=masked, False=attend)
+            attention_mask = ~attention_mask[:, None, None, :].bool()
 
         if isinstance(past_key_values, InferenceParams):
             lengths = (

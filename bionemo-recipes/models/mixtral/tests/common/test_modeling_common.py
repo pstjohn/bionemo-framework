@@ -760,6 +760,57 @@ class BaseModelTest(ABC):
             rtol=tolerances.golden_value_loss_rtol,
         )
 
+    def test_bshd_matches_autopack(self, te_attn_backend):
+        """Test that BSHD model output matches THD model with auto-packed BSHD inputs.
+
+        This validates that the BSHD attention mask and position handling are correct by
+        comparing against the auto-pack path (THD model given BSHD inputs), which removes
+        padding internally and uses correct positions. Any BSHD-specific bugs (wrong mask
+        conversion, incorrect RoPE with left-padding) will show as mismatches.
+        """
+        if te_attn_backend == "fused_attn" and torch.cuda.get_device_capability()[0] == 8:
+            pytest.xfail("On Ada and Ampere, no THD implementation is available for fused attn.")
+        elif te_attn_backend == "fused_attn" and torch.cuda.get_device_capability()[0] == 12:
+            pytest.xfail("BIONEMO-2840: On sm120, the THD implementation is not available for fused attn.")
+
+        input_data_bshd = self.get_test_input_data(format="bshd")
+        tolerances = self.get_tolerances()
+
+        mask = input_data_bshd["attention_mask"].bool()
+
+        # Run BSHD model
+        model_bshd = self.get_converted_te_model(attn_input_format="bshd", dtype=torch.bfloat16)
+        model_bshd.eval()
+        with torch.inference_mode():
+            outputs_bshd = model_bshd(**input_data_bshd)
+        bshd_loss = outputs_bshd.loss.detach().clone()
+        bshd_logits = outputs_bshd.logits[mask].detach().clone()
+        del model_bshd, outputs_bshd
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # Run THD model with BSHD inputs (auto-pack path: removes padding, uses correct positions)
+        model_thd = self.get_converted_te_model(attn_input_format="thd", dtype=torch.bfloat16)
+        model_thd.eval()
+        with torch.inference_mode():
+            outputs_autopack = model_thd(**input_data_bshd)
+
+        # Compare only non-padding logits (padding positions have undefined values in BSHD)
+        torch.testing.assert_close(
+            bshd_logits,
+            outputs_autopack.logits[mask],
+            atol=tolerances.golden_value_logits_atol,
+            rtol=tolerances.golden_value_logits_rtol,
+        )
+
+        # Compare losses
+        torch.testing.assert_close(
+            bshd_loss,
+            outputs_autopack.loss,
+            atol=tolerances.golden_value_loss_atol,
+            rtol=tolerances.golden_value_loss_rtol,
+        )
+
     def test_thd_padding_input_data_equivalence(self):
         """Test that the THD input data is the same before and after padding."""
 

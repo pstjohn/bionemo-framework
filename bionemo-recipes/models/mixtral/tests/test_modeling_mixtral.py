@@ -68,6 +68,9 @@ class TestMixtralModel(BaseModelTest):
         tokenizer = AutoTokenizer.from_pretrained(self.get_upstream_model_id())
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+        # TE only supports right-padding for BSHD inputs, left-padding (Mixtral default) causes issues with RoPE and
+        # attention calculations.
+        tokenizer.padding_side = "right"
         return tokenizer
 
     def get_upstream_model_class(self) -> Type[PreTrainedModel]:
@@ -142,10 +145,3 @@ class TestMixtralModel(BaseModelTest):
             cp_loss_atol=0.5,
             cp_loss_rtol=0.25,
         )
-
-    # @pytest.mark.skip(
-    #     reason="MoE routing is batch-dependent: padding tokens in BSHD affect softmax normalization "
-    #     "and top-k expert selection, so BSHD and THD produce fundamentally different routing decisions."
-    # )
-    # def test_golden_values_thd(self, te_attn_backend):
-    #     """Skip: BSHD vs THD comparison is not meaningful for MoE models."""
