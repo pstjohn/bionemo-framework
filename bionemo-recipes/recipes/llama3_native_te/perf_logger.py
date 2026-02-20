@@ -77,12 +77,13 @@ class PerfLogger:
             self._wandb_run = wandb.init(**args.wandb, config=self._run_config)
             self._progress_bar = tqdm(total=args.num_train_steps, desc="Training")
 
-            if args.profiler.enabled:
-                self._profiler = NsightProfiler(
-                    **args.profiler,
-                    wandb_run=self._wandb_run,
-                    dist_config=dist_config,
-                )
+        # Create profiler on all ranks so every GPU calls cudaProfilerStart/Stop,
+        # ensuring nsys captures the correct step range on every node.
+        if args.profiler.enabled:
+            self._profiler = NsightProfiler(
+                **args.profiler,
+                dist_config=dist_config,
+            )
 
         # Gradient accumulation tracking
         self.num_tokens = 0
@@ -222,7 +223,6 @@ class NsightProfiler:
         enabled: Whether profiling is enabled.
         start_step: The step number at which to start profiling.
         end_step: The step number at which to end profiling.
-        wandb_run: The wandb run for logging artifacts.
         dist_config: The distributed configuration.
 
     Attributes:
@@ -238,11 +238,9 @@ class NsightProfiler:
         enabled: bool,
         start_step: int,
         end_step: int,
-        wandb_run: wandb.Run,
         dist_config: DistributedConfig,
     ):
         """Initialize the Nsight profiler."""
-        self._wandb_run = wandb_run
         self._dist_config = dist_config
 
         self.start_step = start_step
