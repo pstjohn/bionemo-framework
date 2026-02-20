@@ -91,6 +91,7 @@ class NVMixtralSparseMoeBlock(nn.Module):
         self.intermediate_size = config.intermediate_size
         self.num_experts = config.num_local_experts
         self.top_k = config.num_experts_per_tok
+        self.jitter_noise = config.router_jitter_noise
 
         device = "meta" if torch.get_default_device() == torch.device("meta") else "cuda"
 
@@ -137,6 +138,13 @@ class NVMixtralSparseMoeBlock(nn.Module):
             Output tensor of the same shape as the input.
         """
         original_shape = hidden_states.shape
+
+        # Apply multiplicative jitter noise to hidden states during training to encourage load balancing
+        if self.training and self.jitter_noise > 0:
+            hidden_states = hidden_states * torch.empty_like(hidden_states).uniform_(
+                1.0 - self.jitter_noise, 1.0 + self.jitter_noise
+            )
+
         # Flatten to [N, H] for routing
         if hidden_states.dim() == 3:
             hidden_states = hidden_states.reshape(-1, self.hidden_size)

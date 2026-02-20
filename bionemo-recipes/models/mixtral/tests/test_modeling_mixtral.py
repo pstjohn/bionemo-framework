@@ -143,9 +143,9 @@ class TestMixtralModel(BaseModelTest):
             cp_loss_rtol=0.25,
         )
 
-    @pytest.mark.skip(
-        reason="MoE routing is batch-dependent: padding tokens in BSHD affect softmax normalization "
-        "and top-k expert selection, so BSHD and THD produce fundamentally different routing decisions."
-    )
-    def test_golden_values_thd(self, te_attn_backend):
-        """Skip: BSHD vs THD comparison is not meaningful for MoE models."""
+    # @pytest.mark.skip(
+    #     reason="MoE routing is batch-dependent: padding tokens in BSHD affect softmax normalization "
+    #     "and top-k expert selection, so BSHD and THD produce fundamentally different routing decisions."
+    # )
+    # def test_golden_values_thd(self, te_attn_backend):
+    #     """Skip: BSHD vs THD comparison is not meaningful for MoE models."""
