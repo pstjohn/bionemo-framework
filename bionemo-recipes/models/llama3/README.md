@@ -36,7 +36,7 @@ from convert import convert_llama_hf_to_te
 
 # Load the original HuggingFace Llama 3 model
 model_hf = AutoModelForCausalLM.from_pretrained(
-    "meta-llama/Llama-3.2-1B-Instruct", dtype=torch.bfloat16
+    "meta-llama/Llama-3.2-1B-Instruct", torch_dtype=torch.bfloat16
 )
 
 # Convert to TransformerEngine.
@@ -163,4 +163,4 @@ To run tests locally, run `recipes_local_test.py` from the repository root with 
 
 To use the provided devcontainer, use "Dev Containers: Reopen in Container" from the VSCode menu, and choose the
 "BioNeMo Recipes Dev Container" option. To run the tests inside the container, first install the model package in
-editable mode with `pip install -e .`, then run `pytest -v .` in the model directory.
+the dependencies with `pip install -r requirements.txt`, then run `pytest -v .` in the model directory.
