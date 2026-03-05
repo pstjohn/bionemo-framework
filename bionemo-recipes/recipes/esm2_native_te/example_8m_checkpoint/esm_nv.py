@@ -22,6 +22,7 @@
 Adapted from `modeling_esm.py` in huggingface/transformers.
 """
 
+import warnings
 from typing import ClassVar, Literal, Optional, Unpack
 
 # TODO: put import guard around transformer_engine here, with an informative error message around
@@ -197,6 +198,8 @@ class NVEsmEncoder(nn.Module):
         with torch.autocast(device_type="cuda", enabled=False):
             te_rope_emb = self.rotary_embeddings(max_seq_len=self.config.max_position_embeddings)
             te_rope_emb = te_rope_emb.to(hidden_states.device, non_blocking=True)
+            if te_rope_emb.dtype == torch.float32:
+                warnings.warn("Rotary embeddings should be in float32 for optimal performance.", UserWarning)
 
         for layer_module in self.layers:
             if kwargs.get("output_hidden_states", False):
@@ -374,7 +377,7 @@ class NVEsmModel(NVEsmPreTrainedModel):
         )
         encoder_outputs = self.encoder(
             embedding_output,
-            attention_mask=extended_attention_mask,
+            attention_mask=None if self.config.attn_input_format == "thd" else extended_attention_mask,
             **kwargs,
         )
         sequence_output = encoder_outputs[0]
