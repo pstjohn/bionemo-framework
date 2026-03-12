@@ -54,12 +54,18 @@ _nvshmem_available = None
 def _is_nvshmem_available() -> bool:
     """Check if DeepEP was compiled with NVSHMEM support.
 
-    Uses is_sm90_compiled() as proxy — DeepEP's build enforces that
-    NVSHMEM is disabled when SM90 features are disabled.
+    Probes NVSHMEM by calling get_rdma_buffer_size_hint, since
+    is_sm90_compiled() alone is not a reliable proxy — SM90 can
+    be compiled while NVSHMEM is still disabled.
     """
     global _nvshmem_available  # noqa: PLW0603
     if _nvshmem_available is None:
-        _nvshmem_available = Buffer.is_sm90_compiled()
+        try:
+            config = Buffer.get_dispatch_config(2)
+            config.get_rdma_buffer_size_hint(256, 2)
+            _nvshmem_available = True
+        except RuntimeError:
+            _nvshmem_available = False
     return _nvshmem_available
 
 

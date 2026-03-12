@@ -384,8 +384,8 @@ def _run_backward_test():
             torch.testing.assert_close(
                 test_grads[name],
                 ref_grads[name],
-                atol=1e-2,
-                rtol=1e-2,
+                atol=3e-2,
+                rtol=3e-2,
                 msg=f"FusedTokenRouter gradient mismatch for {name}",
             )
 

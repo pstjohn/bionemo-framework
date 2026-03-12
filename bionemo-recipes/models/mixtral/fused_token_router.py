@@ -36,6 +36,7 @@ class _FusedHandle:
     deepep_handle: Any
     row_id_map: torch.Tensor
     probs_multihot: torch.Tensor
+    recv_shape: torch.Size
 
 
 class FusedTokenRouter:
@@ -100,17 +101,20 @@ class FusedTokenRouter:
         )
 
         # Step 2: Convert sparse [N, top_k] indices to dense [N, num_local_experts] multihot (Triton)
+        # Note: DeepEP returns local expert indices (0-based per rank), not global indices.
         multihot_mask, probs_multihot = fused_indices_to_multihot(recv_indices, recv_probs, self.num_local_experts)
 
         # Step 3: Permute received tokens by local expert for GroupedLinear
+        num_out_tokens = int(tokens_per_expert.sum().item())
         permuted_x, row_id_map = transformer_engine.pytorch.moe_permute(
-            recv_x, multihot_mask.to(torch.int32), map_type="mask"
+            recv_x, multihot_mask.to(torch.int32), num_out_tokens=num_out_tokens, map_type="mask"
         )
 
         handle = _FusedHandle(
             deepep_handle=deepep_handle,
             row_id_map=row_id_map,
             probs_multihot=probs_multihot,
+            recv_shape=recv_x.shape,
         )
 
         return DispatchOutput(
@@ -134,6 +138,7 @@ class FusedTokenRouter:
             expert_output,
             handle.row_id_map,
             merging_probs=handle.probs_multihot,
+            restore_shape=handle.recv_shape,
             map_type="mask",
         )
 
