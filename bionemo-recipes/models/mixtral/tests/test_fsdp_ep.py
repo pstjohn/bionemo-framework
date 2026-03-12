@@ -91,24 +91,34 @@ class DistributedConfig:
         return self.rank == 0
 
 
-def _shard_expert_weights(full_state_dict: dict, ep_rank: int, ep_size: int, num_experts: int) -> dict:
-    """Shard stacked expert weights from a full (EP=1) state dict for a given EP rank.
+def _distribute_state_dict(full_state_dict: dict, model: torch.nn.Module, device: torch.device) -> dict:
+    """Distribute a full (EP=1) state dict to match a model's DTensor sharding.
 
-    Expert weight keys are ``...experts_gate_up_weight`` and ``...experts_down_weight``
-    with shape ``[num_experts, ...]``. For EP, each rank keeps only its local slice.
+    After calling ``set_ep_groups``, expert weight parameters become DTensors with
+    ``Shard(0)`` placement.  This function uses ``distribute_tensor`` to automatically
+    shard full expert weights according to those annotations, avoiding manual slicing.
+
+    Args:
+        full_state_dict: Complete state dict from an EP=1 model (plain tensors).
+        model: Target EP model whose expert parameters are already DTensors.
+        device: Device to move source tensors to before distributing.
     """
-    experts_per_rank = num_experts // ep_size
-    start_expert = ep_rank * experts_per_rank
-    end_expert = start_expert + experts_per_rank
+    from torch.distributed.tensor import DTensor, distribute_tensor
 
-    new_state_dict = {}
-    for key, value in full_state_dict.items():
-        if key.endswith("experts_gate_up_weight") or key.endswith("experts_down_weight"):
-            new_state_dict[key] = value[start_expert:end_expert]
+    distributed_state: dict = {}
+    for key, value in model.state_dict().items():
+        if key not in full_state_dict:
+            continue
+        full_value = full_state_dict[key]
+        if isinstance(value, DTensor):
+            distributed_state[key] = distribute_tensor(
+                full_value.to(device),
+                value.device_mesh,
+                list(value.placements),
+            )
         else:
-            new_state_dict[key] = value
-
-    return new_state_dict
+            distributed_state[key] = full_value
+    return distributed_state
 
 
 def _train_step(model, batch):
@@ -267,8 +277,8 @@ def _worker_fsdp1_ep2():
     placement logic is exercised even though the DP dimension is trivial.
 
     1. Init distributed, create 2D device mesh with dp=1.
-    2. Create full EP=1 model for reference weights, shard experts per EP rank.
-    3. Create EP=2 model, load sharded weights, set EP groups on EP sub-mesh.
+    2. Create full EP=1 model for reference weights.
+    3. Create EP=2 model, set EP groups (DTensor annotations), load via distribute_tensor.
     4. Wrap with FSDP2 on the trivial DP sub-mesh.
     5. Run one training step, verify loss/gradients are finite and weights update.
     """
@@ -286,7 +296,6 @@ def _worker_fsdp1_ep2():
 
     ep_mesh = device_mesh["ep"]
     ep_group = ep_mesh.get_group()
-    ep_rank = ep_mesh.get_local_rank()
 
     # Get reference weights from a full EP=1 model
     config_full = _create_small_mixtral_config(expert_parallel_size=1)
@@ -295,16 +304,17 @@ def _worker_fsdp1_ep2():
     full_state_dict = {k: v.clone() for k, v in full_model.state_dict().items()}
     del full_model
 
-    # Create EP=2 model with sharded expert weights
+    # Create EP=2 model, set EP groups to create DTensor annotations, then load weights
     config_ep = _create_small_mixtral_config(expert_parallel_size=ep_size)
     torch.manual_seed(0)
     model = NVMixtralForCausalLM(config_ep).to(dtype=torch.bfloat16, device=device)
 
-    sharded_state = _shard_expert_weights(full_state_dict, ep_rank, ep_size, config_full.num_local_experts)
-    model.load_state_dict(sharded_state, strict=False)
-
-    # EP setup on EP sub-mesh
+    # EP setup on EP sub-mesh first (creates DTensor annotations on expert weights)
     model.model.set_ep_groups(ep_group, ep_mesh)
+
+    # Load EP=1 weights — distribute_tensor handles expert sharding automatically
+    distributed_state = _distribute_state_dict(full_state_dict, model, device)
+    model.load_state_dict(distributed_state, strict=False)
 
     # FSDP2 wrapping on trivial (size-1) DP sub-mesh
     for layer in model.model.layers:
@@ -332,8 +342,8 @@ def _worker_fsdp2_ep2():
     """FSDP=2, EP=2: both FSDP and EP active (requires 4 GPUs).
 
     1. Init distributed, create 2D device mesh (dp=2, ep=2).
-    2. Create full EP=1 model for reference weights, shard experts per EP rank.
-    3. Create EP=2 model, load sharded weights, set EP groups on EP sub-mesh.
+    2. Create full EP=1 model for reference weights.
+    3. Create EP=2 model, set EP groups (DTensor annotations), load via distribute_tensor.
     4. Wrap with FSDP2 on DP sub-mesh.
     5. Run one training step, verify loss/gradients are finite and weights update.
     """
@@ -352,7 +362,6 @@ def _worker_fsdp2_ep2():
     device_mesh = init_device_mesh("cuda", mesh_shape=(dp_size, ep_size), mesh_dim_names=("dp", "ep"))
     ep_mesh = device_mesh["ep"]
     ep_group = ep_mesh.get_group()
-    ep_rank = ep_mesh.get_local_rank()
 
     # Get reference weights from a full EP=1 model
     config_full = _create_small_mixtral_config(expert_parallel_size=1)
@@ -361,16 +370,17 @@ def _worker_fsdp2_ep2():
     full_state_dict = {k: v.clone() for k, v in full_model.state_dict().items()}
     del full_model
 
-    # Create EP=2 model with sharded expert weights
+    # Create EP=2 model, set EP groups to create DTensor annotations, then load weights
     config_ep = _create_small_mixtral_config(expert_parallel_size=ep_size)
     torch.manual_seed(0)
     model = NVMixtralForCausalLM(config_ep).to(dtype=torch.bfloat16, device=device)
 
-    sharded_state = _shard_expert_weights(full_state_dict, ep_rank, ep_size, config_full.num_local_experts)
-    model.load_state_dict(sharded_state, strict=False)
-
     # EP setup first: wrap expert weights as DTensors on EP sub-mesh
     model.model.set_ep_groups(ep_group, ep_mesh)
+
+    # Load EP=1 weights — distribute_tensor handles expert sharding automatically
+    distributed_state = _distribute_state_dict(full_state_dict, model, device)
+    model.load_state_dict(distributed_state, strict=False)
 
     # FSDP2 wrapping on DP sub-mesh
     for layer in model.model.layers:

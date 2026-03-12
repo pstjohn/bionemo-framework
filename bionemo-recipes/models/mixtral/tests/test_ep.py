@@ -114,30 +114,34 @@ class DistributedConfig:
         return self.rank == 0
 
 
-def _shard_expert_weights(full_state_dict: dict, ep_rank: int, ep_size: int, num_experts: int) -> dict:
-    """Shard stacked expert weights from a full (EP=1) state dict for a given EP rank.
+def _distribute_state_dict(full_state_dict: dict, model: torch.nn.Module, device: torch.device) -> dict:
+    """Distribute a full (EP=1) state dict to match a model's DTensor sharding.
 
-    Expert weight keys are ``...experts_gate_up_weight`` and ``...experts_down_weight``
-    with shape ``[num_experts, ...]``. For EP, each rank keeps only its local slice.
+    After calling ``set_ep_groups``, expert weight parameters become DTensors with
+    ``Shard(0)`` placement.  This function uses ``distribute_tensor`` to automatically
+    shard full expert weights according to those annotations, avoiding manual slicing.
 
     Args:
-        full_state_dict: Complete state dict from an EP=1 model.
-        ep_rank: This rank's index in the EP group.
-        ep_size: Total number of EP ranks.
-        num_experts: Total number of experts (before sharding).
+        full_state_dict: Complete state dict from an EP=1 model (plain tensors).
+        model: Target EP model whose expert parameters are already DTensors.
+        device: Device to move source tensors to before distributing.
     """
-    experts_per_rank = num_experts // ep_size
-    start_expert = ep_rank * experts_per_rank
-    end_expert = start_expert + experts_per_rank
+    from torch.distributed.tensor import DTensor, distribute_tensor
 
-    new_state_dict = {}
-    for key, value in full_state_dict.items():
-        if key.endswith("experts_gate_up_weight") or key.endswith("experts_down_weight"):
-            new_state_dict[key] = value[start_expert:end_expert]
+    distributed_state: dict = {}
+    for key, value in model.state_dict().items():
+        if key not in full_state_dict:
+            continue
+        full_value = full_state_dict[key]
+        if isinstance(value, DTensor):
+            distributed_state[key] = distribute_tensor(
+                full_value.to(device),
+                value.device_mesh,
+                list(value.placements),
+            )
         else:
-            new_state_dict[key] = value
-
-    return new_state_dict
+            distributed_state[key] = full_value
+    return distributed_state
 
 
 def _run_ep_equivalence_test():
@@ -154,7 +158,6 @@ def _run_ep_equivalence_test():
     device = torch.device(f"cuda:{dist_config.local_rank}")
     torch.cuda.set_device(device)
     torch.distributed.init_process_group(backend="nccl", device_id=device)
-    ep_rank = dist_config.rank
     ep_size = dist_config.world_size
 
     # --- Phase 1: EP=1 reference (every rank computes independently) ---
@@ -171,7 +174,7 @@ def _run_ep_equivalence_test():
     logits_ep1 = outputs_ep1.logits.detach().clone().cpu()
     loss_ep1 = outputs_ep1.loss.detach().clone().cpu()
 
-    # Save EP=1 full state dict on CPU for sharding
+    # Save EP=1 full state dict on CPU for loading into EP model
     full_state_dict = {k: v.clone().cpu() for k, v in model_ep1.state_dict().items()}
 
     del model_ep1, outputs_ep1
@@ -182,15 +185,15 @@ def _run_ep_equivalence_test():
     torch.manual_seed(0)
     model_ep2 = NVMixtralForCausalLM(config_ep2).to(dtype=torch.bfloat16, device=device)
 
-    # Load sharded expert weights (strict=False to skip TE _extra_state keys)
-    sharded_state_dict = _shard_expert_weights(full_state_dict, ep_rank, ep_size, config_ep1.num_local_experts)
-    model_ep2.load_state_dict(sharded_state_dict, strict=False)
-    model_ep2.eval()
-
-    # Set EP process group and mesh on all MoE blocks
+    # Set EP groups first to create DTensor annotations on expert weights
     ep_mesh = DeviceMesh("cuda", list(range(ep_size)))
     ep_group = ep_mesh.get_group()
     model_ep2.model.set_ep_groups(ep_group, ep_mesh)
+
+    # Load EP=1 weights — distribute_tensor handles expert sharding automatically
+    distributed_state = _distribute_state_dict(full_state_dict, model_ep2, device)
+    model_ep2.load_state_dict(distributed_state, strict=False)
+    model_ep2.eval()
 
     # Same batch on all ranks (EP dispatches tokens, input is replicated)
     batch_cuda = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
