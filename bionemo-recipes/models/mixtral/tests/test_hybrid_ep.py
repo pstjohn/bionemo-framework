@@ -17,6 +17,7 @@
 
 Verifies that both DeepEP dispatchers (HybridEPBuffer and Buffer backends) produce
 the same logits and loss as the AllToAllTokenDispatcher when running with EP=2.
+Also verifies that the backward pass produces matching gradients.
 """
 
 import os
@@ -180,6 +181,24 @@ def test_buffer_matches_alltoall(unused_tcp_port):
     _run_torchrun("buffer", unused_tcp_port)
 
 
+@requires_multi_gpu
+@requires_deep_ep
+@requires_peer_access
+def test_hybrid_ep_backward(unused_tcp_port):
+    """Test that backward pass with HybridEPBuffer dispatcher matches AllToAll at EP=2."""
+    _run_torchrun("hybrid_ep_backward", unused_tcp_port)
+
+
+@requires_multi_gpu
+@requires_deep_ep
+def test_buffer_backward(unused_tcp_port):
+    """Test that backward pass with Buffer dispatcher matches AllToAll at EP=2.
+
+    Skipped inside the worker if NVSHMEM is not available (Buffer constructor fails).
+    """
+    _run_torchrun("buffer_backward", unused_tcp_port)
+
+
 # ---------------------------------------------------------------------------
 # Distributed worker executed via torchrun
 # ---------------------------------------------------------------------------
@@ -306,6 +325,139 @@ def _run_equivalence_test(backend: str):
     torch.distributed.destroy_process_group()
 
 
+def _run_backward_test(backend: str):
+    """Worker function for the DeepEP backward pass equivalence test.
+
+    1. Init distributed with 2 GPUs.
+    2. Create EP=1 model for reference weights.
+    3. Create EP=2 model with AllToAll dispatcher → reference loss + gradients.
+    4. Create EP=2 model with selected DeepEP dispatcher → test loss + gradients.
+    5. Compare loss and parameter gradients.
+    """
+    from torch.distributed.tensor.device_mesh import DeviceMesh
+
+    from hybrid_ep_token_router import DeepEPBufferTokenDispatcher, HybridEPTokenDispatcher
+
+    dist_config = DistributedConfig()
+    device = torch.device(f"cuda:{dist_config.local_rank}")
+    torch.cuda.set_device(device)
+    torch.distributed.init_process_group(backend="nccl", device_id=device)
+    ep_rank = dist_config.rank
+    ep_size = dist_config.world_size
+
+    # --- Phase 1: Create EP=1 model for reference weights ---
+    config_ep1 = _create_small_mixtral_config(expert_parallel_size=1)
+    torch.manual_seed(0)
+    model_ep1 = NVMixtralForCausalLM(config_ep1).to(dtype=torch.bfloat16, device=device)
+    full_state_dict = {k: v.clone().cpu() for k, v in model_ep1.state_dict().items()}
+    del model_ep1
+    torch.cuda.empty_cache()
+
+    batch = _get_dummy_batch(config_ep1.vocab_size, seq_len=32, batch_size=2, device=device)
+    num_experts = config_ep1.num_local_experts
+
+    # --- Phase 2: EP=2 + AllToAll dispatcher → reference loss + gradients ---
+    config_ep2 = _create_small_mixtral_config(expert_parallel_size=ep_size)
+    torch.manual_seed(0)
+    model_alltoall = NVMixtralForCausalLM(config_ep2).to(dtype=torch.bfloat16, device=device)
+
+    sharded_state = _shard_expert_weights(full_state_dict, ep_rank, ep_size, num_experts)
+    model_alltoall.load_state_dict(sharded_state, strict=False)
+
+    ep_mesh = DeviceMesh("cuda", list(range(ep_size)))
+    ep_group = ep_mesh.get_group()
+    model_alltoall.model.set_ep_groups(ep_group, ep_mesh)
+
+    outputs_ref = model_alltoall(**batch)
+    loss_ref = outputs_ref.loss
+    loss_ref.backward()
+
+    ref_grads = {
+        name: p.grad.detach().clone().cpu() for name, p in model_alltoall.named_parameters() if p.grad is not None
+    }
+    loss_ref_cpu = loss_ref.detach().cpu()
+
+    del model_alltoall, outputs_ref
+    torch.cuda.empty_cache()
+
+    # --- Phase 3: EP=2 + DeepEP dispatcher → test loss + gradients ---
+    num_local_experts = num_experts // ep_size
+    hidden_size = config_ep2.hidden_size
+
+    if backend == "hybrid_ep":
+        make_dispatcher = lambda: HybridEPTokenDispatcher(  # noqa: E731
+            num_experts=num_experts,
+            num_local_experts=num_local_experts,
+            hidden_size=hidden_size,
+            ep_size=ep_size,
+        )
+    elif backend == "buffer":
+        try:
+            from deep_ep import Buffer
+
+            Buffer(group=ep_group, num_nvl_bytes=0)
+        except Exception as e:
+            if dist_config.is_main_process():
+                print(f"SKIP: Buffer backend not available (NVSHMEM disabled): {e}")
+            torch.distributed.destroy_process_group()
+            return
+
+        make_dispatcher = lambda: DeepEPBufferTokenDispatcher(  # noqa: E731
+            num_experts=num_experts,
+            num_local_experts=num_local_experts,
+            hidden_size=hidden_size,
+            ep_size=ep_size,
+        )
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+
+    torch.manual_seed(0)
+    model_deepep = NVMixtralForCausalLM(config_ep2).to(dtype=torch.bfloat16, device=device)
+    model_deepep.load_state_dict(sharded_state, strict=False)
+
+    model_deepep.model.set_dispatchers(make_dispatcher)
+    model_deepep.model.set_ep_groups(ep_group, ep_mesh)
+
+    outputs_test = model_deepep(**batch)
+    loss_test = outputs_test.loss
+    loss_test.backward()
+
+    test_grads = {
+        name: p.grad.detach().clone().cpu() for name, p in model_deepep.named_parameters() if p.grad is not None
+    }
+    loss_test_cpu = loss_test.detach().cpu()
+
+    # --- Phase 4: Compare on rank 0 ---
+    if dist_config.is_main_process():
+        torch.testing.assert_close(
+            loss_test_cpu,
+            loss_ref_cpu,
+            atol=1e-3,
+            rtol=1e-3,
+            msg=f"DeepEP {backend} backward: loss does not match AllToAll loss",
+        )
+
+        assert len(ref_grads) > 0, "AllToAll model produced no gradients"
+        assert len(test_grads) > 0, f"DeepEP {backend} model produced no gradients"
+
+        for name in ref_grads:
+            assert name in test_grads, f"DeepEP {backend} missing gradient for parameter: {name}"
+            torch.testing.assert_close(
+                test_grads[name],
+                ref_grads[name],
+                atol=1e-2,
+                rtol=1e-2,
+                msg=f"DeepEP {backend} gradient mismatch for {name}",
+            )
+
+        print(f"DeepEP {backend} backward test PASSED: loss and gradients match AllToAll")
+
+    torch.distributed.destroy_process_group()
+
+
 if __name__ == "__main__":
-    backend_name = sys.argv[1]
-    _run_equivalence_test(backend_name)
+    test_name = sys.argv[1]
+    if test_name.endswith("_backward"):
+        _run_backward_test(test_name.removesuffix("_backward"))
+    else:
+        _run_equivalence_test(test_name)
