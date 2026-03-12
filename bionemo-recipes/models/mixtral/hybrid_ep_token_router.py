@@ -138,9 +138,11 @@ class HybridEPTokenDispatcher:
         Returns:
             Combined output tensor of shape ``[N, H]`` with routing weights applied.
         """
+        # combine_with_unpermute performs addition WITHOUT applying routing weights,
+        # so we pre-multiply expert outputs by the dispatched routing probabilities.
+        weighted_output = expert_output * handle.dispatched_probs.unsqueeze(1).to(expert_output.dtype)
         combined_token, _combined_probs = self._buffer.combine_with_unpermute(
-            hidden=expert_output,
-            probs=handle.dispatched_probs,
+            hidden=weighted_output,
             handle=handle.deep_ep_handle,
         )
         return combined_token
@@ -151,19 +153,76 @@ class HybridEPTokenDispatcher:
 # ---------------------------------------------------------------------------
 
 
+def _local_permute(
+    tokens: torch.Tensor,
+    routing_map: torch.Tensor,
+    probs: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Expand and sort tokens by local expert using a multihot routing map.
+
+    Tokens assigned to multiple local experts are duplicated. The output is
+    sorted by expert (all tokens for expert 0, then expert 1, etc.).
+
+    Args:
+        tokens: Unique received tokens, shape ``[N_unique, H]``.
+        routing_map: Boolean map, shape ``[N_unique, num_local_experts]``.
+        probs: Routing weights in multihot layout, shape ``[N_unique, num_local_experts]``, float32.
+
+    Returns:
+        ``(expanded_tokens, permuted_probs, sorted_indices)`` where
+        ``sorted_indices`` maps expanded rows back to unique-token rows.
+    """
+    num_local_experts = routing_map.shape[1]
+    num_unique = tokens.shape[0]
+    token_ids = torch.arange(num_unique, device=tokens.device).unsqueeze(0).expand(num_local_experts, -1)
+    sorted_indices = token_ids.masked_select(routing_map.T.contiguous())
+    permuted_probs = probs.T.contiguous().masked_select(routing_map.T.contiguous())
+    return tokens[sorted_indices], permuted_probs, sorted_indices
+
+
+def _local_unpermute(
+    permuted_tokens: torch.Tensor,
+    sorted_indices: torch.Tensor,
+    num_unique: int,
+) -> torch.Tensor:
+    """Reverse ``_local_permute``: scatter-add expanded tokens back to unique positions.
+
+    Args:
+        permuted_tokens: Expert outputs (already weighted), shape ``[N_expanded, H]``.
+        sorted_indices: Mapping from ``_local_permute``, shape ``[N_expanded]``.
+        num_unique: Number of unique received tokens.
+
+    Returns:
+        Contracted tensor of shape ``[N_unique, H]``.
+    """
+    hidden = permuted_tokens.shape[1]
+    output = torch.zeros(num_unique, hidden, device=permuted_tokens.device, dtype=permuted_tokens.dtype)
+    output.scatter_add_(0, sorted_indices.unsqueeze(1).expand(-1, hidden), permuted_tokens)
+    return output
+
+
 @dataclass
 class _BufferHandle:
     """Opaque handle for DeepEPBufferTokenDispatcher, storing state between dispatch and combine."""
 
     deep_ep_handle: tuple
     recv_topk_weights: torch.Tensor
+    permuted_probs: torch.Tensor
+    sorted_indices: torch.Tensor
+    num_unique: int
 
 
 class DeepEPBufferTokenDispatcher:
     """TokenDispatcher using DeepEP ``Buffer`` for expert-parallel communication.
 
     Uses lower-latency intranode NVLink kernels. Requires NVSHMEM to be enabled
-    at build time (currently disabled in ``install_hybridep.sh``).
+    at build time.
+
+    ``Buffer.dispatch`` returns *unique* received tokens — one copy per token
+    regardless of how many local experts it is routed to.  A local
+    permute/unpermute step (``_local_permute`` / ``_local_unpermute``) expands
+    tokens for multi-expert assignments and contracts them back after the
+    expert FFN, following the pattern used in NeMo Automodel.
 
     Args:
         num_experts: Total number of experts (global).
@@ -179,6 +238,7 @@ class DeepEPBufferTokenDispatcher:
         self.num_local_experts = num_local_experts
         self.hidden_size = hidden_size
         self._buffer: Any = None
+        self._ep_rank: int = 0
 
     def set_ep_group(self, ep_group: dist.ProcessGroup) -> None:
         """Create the ``Buffer`` for the given expert-parallel process group.
@@ -188,6 +248,7 @@ class DeepEPBufferTokenDispatcher:
         """
         from deep_ep import Buffer
 
+        self._ep_rank = dist.get_rank(ep_group)
         group_size = ep_group.size()
         # hidden_size is in elements; Buffer uses bf16 so 2 bytes per element
         hidden_bytes = self.hidden_size * 2
@@ -223,8 +284,8 @@ class DeepEPBufferTokenDispatcher:
             self._buffer.get_dispatch_layout(topk_idx, self.num_experts)
         )
 
-        # Phase 2: dispatch tokens
-        recv_x, _recv_topk_idx, recv_topk_weights, tokens_per_expert_list, handle, _event = self._buffer.dispatch(
+        # Phase 2: inter-rank dispatch (returns unique tokens)
+        recv_x, recv_topk_idx, recv_topk_weights, _tokens_per_expert_list, handle, _event = self._buffer.dispatch(
             hidden_states,
             topk_idx=topk_idx,
             topk_weights=routing_weights,
@@ -233,10 +294,33 @@ class DeepEPBufferTokenDispatcher:
             num_tokens_per_expert=num_tokens_per_expert,
         )
 
+        # Phase 3: local permute — expand unique tokens for multi-local-expert assignments.
+        # recv_topk_idx uses LOCAL expert indices (0-based per rank), with -1 for non-local experts.
+        # Convert to multihot routing_map [N_unique, num_local_experts] and probs_map.
+        num_unique = recv_x.shape[0]
+        routing_map = torch.zeros(num_unique, self.num_local_experts, device=recv_x.device, dtype=torch.bool)
+        probs_map = torch.zeros(num_unique, self.num_local_experts, device=recv_x.device, dtype=torch.float32)
+        for k in range(recv_topk_idx.shape[1]):
+            col = recv_topk_idx[:, k]
+            valid = (col >= 0) & (col < self.num_local_experts)
+            if valid.any():
+                rows = torch.arange(num_unique, device=recv_x.device)[valid]
+                routing_map[rows, col[valid]] = True
+                probs_map[rows, col[valid]] = recv_topk_weights[valid, k]
+
+        expanded_tokens, permuted_probs, sorted_indices = _local_permute(recv_x, routing_map, probs_map)
+        tokens_per_expert = routing_map.sum(dim=0).int().tolist()
+
         return DispatchOutput(
-            expert_input=recv_x,
-            tokens_per_expert=tokens_per_expert_list,
-            handle=_BufferHandle(deep_ep_handle=handle, recv_topk_weights=recv_topk_weights),
+            expert_input=expanded_tokens,
+            tokens_per_expert=tokens_per_expert,
+            handle=_BufferHandle(
+                deep_ep_handle=handle,
+                recv_topk_weights=recv_topk_weights,
+                permuted_probs=permuted_probs,
+                sorted_indices=sorted_indices,
+                num_unique=num_unique,
+            ),
         )
 
     def combine(self, expert_output: torch.Tensor, handle: _BufferHandle) -> torch.Tensor:
@@ -249,8 +333,15 @@ class DeepEPBufferTokenDispatcher:
         Returns:
             Combined output tensor of shape ``[N, H]`` with routing weights applied.
         """
+        # Pre-multiply expert outputs by per-token routing probabilities.
+        weighted = expert_output * handle.permuted_probs.unsqueeze(1).to(expert_output.dtype)
+
+        # Local unpermute: scatter-add weighted outputs back to unique-token positions.
+        contracted = _local_unpermute(weighted, handle.sorted_indices, handle.num_unique)
+
+        # Inter-rank combine (addition without weights).
         recv_x, _recv_topk_weights, _event = self._buffer.combine(
-            expert_output,
+            contracted,
             handle.deep_ep_handle,
             topk_weights=handle.recv_topk_weights,
         )
