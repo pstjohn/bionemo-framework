@@ -148,6 +148,10 @@ def main(args: DictConfig) -> float | None:
 
     if args.use_torch_compile:
         # If we're using torch.compile, we need to do this before loading the checkpoint to ensure key consistency.
+        # PyTorch 2.13 can hit an internal Dynamo block-stack assertion when Transformer Engine performs runtime
+        # attention backend selection inside its autocast contexts. Fall back to eager for unsupported frames while
+        # retaining compilation for the rest of the model.
+        torch._dynamo.config.suppress_errors = True
         model = torch.compile(model)
 
     # If we're resuming from a checkpoint, load it and set the start step. Otherwise, start from step 0.
